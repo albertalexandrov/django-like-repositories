@@ -29,11 +29,14 @@ async def get_ordering(repository: UsersRepository = Depends()):
 
 @app.get("/icontains", response_model=list[UserSchema])
 async def get_users(repository: UsersRepository = Depends()):
-    return await repository.objects.filter(type__status__id=1).select_related("type").all()
+    return await repository.objects.filter(type__status__id=1).options("type__status").all()
 
 
 @app.get("/select-related", response_model=list[UserSchema])
 async def get_select_related(repository: UsersRepository = Depends()):
-    result = await repository.objects.select_related("type__status").scalars()
-    users = result.all()
-    return users
+    return await repository.objects.filter(type__id=1).options("type__status").all()
+
+
+@app.get("/order-by", response_model=list[UserSchema])
+async def get_select_related(repository: UsersRepository = Depends()):
+    return await repository.objects.options('type').order_by("type__description").all()

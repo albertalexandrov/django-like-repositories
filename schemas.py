@@ -9,7 +9,7 @@ class UserSchema(BaseModel):
     id: int
     first_name: str
     last_name: str
-    # type: Type
+    type: Type
 
 
 class CreateUserSchema(BaseModel):
