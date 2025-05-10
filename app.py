@@ -18,7 +18,7 @@ async def create_user(data: CreateUserSchema, session: AsyncSession = Depends(ge
 
 @app.get("/first", response_model=UserSchema)
 async def get_first(repository: UsersRepository = Depends()):
-    return await repository.objects.filter(first_name__in=["Иван", "Петр"]).first()
+    return await repository.objects.filter(first_name__in=["Иван", "Петр"]).options('type').first()
 
 
 @app.get("/ordering", response_model=list[UserSchema])
@@ -29,7 +29,7 @@ async def get_ordering(repository: UsersRepository = Depends()):
 
 @app.get("/icontains", response_model=list[UserSchema])
 async def get_users(repository: UsersRepository = Depends()):
-    return await repository.objects.filter(type__status__id=1).options("type__status").all()
+    return await repository.objects.filter(type__code="sh").options("type").all()
 
 
 @app.get("/select-related", response_model=list[UserSchema])
