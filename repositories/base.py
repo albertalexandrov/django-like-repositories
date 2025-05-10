@@ -1,5 +1,5 @@
 from fastapi.params import Depends
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
@@ -17,11 +17,19 @@ class BaseRepository:
         self._session.add(instance)
         return instance
 
+    @property
+    def objects(self) -> QuerySet:
+        return QuerySet(self.model, self._session)
+
     async def all(self):
         stmt = select(self.model)
         result = await self._session.scalars(stmt)
         return result.all()
 
-    @property
-    def objects(self):
-        return QuerySet(self.model, self._session)
+    async def first(self):
+        stmt = select(self.model).limit(1)
+        return await self._session.scalar(stmt)
+
+    async def delete(self):
+        stmt = delete(self.model)
+        await self._session.execute(stmt)

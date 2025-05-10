@@ -44,3 +44,8 @@ async def get_select_related(repository: UsersRepository = Depends()):
 @app.get("/active-only", response_model=list[UserSchema])
 async def get_active_only(repository: UsersRepository = Depends()):
     return await repository.active.options('type').order_by('id').all()
+
+
+@app.get("/created-by", response_model=list[UserSchema])
+async def get_created_by(repository: UsersRepository = Depends()):
+    return await repository.user_restricted(1).options('type').all()
