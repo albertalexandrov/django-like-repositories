@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base
@@ -28,3 +28,4 @@ class User(Base):
     last_name: Mapped[str]
     type_id: Mapped[int | None] = mapped_column(ForeignKey('user_types.id'))
     type: Mapped["UserType"] = relationship(back_populates="users")
+    is_active: Mapped[bool] = mapped_column(default=True, server_default=true())

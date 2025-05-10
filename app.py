@@ -23,8 +23,7 @@ async def get_first(repository: UsersRepository = Depends()):
 
 @app.get("/ordering", response_model=list[UserSchema])
 async def get_ordering(repository: UsersRepository = Depends()):
-    users = (await repository.objects.order_by("-first_name", "-last_name").scalars()).all()
-    return users
+    return await repository.objects.order_by("-first_name", "-last_name").options("type").all()
 
 
 @app.get("/icontains", response_model=list[UserSchema])
@@ -40,3 +39,8 @@ async def get_select_related(repository: UsersRepository = Depends()):
 @app.get("/order-by", response_model=list[UserSchema])
 async def get_select_related(repository: UsersRepository = Depends()):
     return await repository.objects.options('type').order_by("type__description").all()
+
+
+@app.get("/active-only", response_model=list[UserSchema])
+async def get_active_only(repository: UsersRepository = Depends()):
+    return await repository.active.options('type').order_by('id').all()
