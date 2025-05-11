@@ -1,3 +1,4 @@
+from fastapi_filter.contrib.sqlalchemy import Filter
 from sqlalchemy import select, extract, inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
@@ -57,7 +58,7 @@ class QuerySet:
         self._joins = {}
         self._options = []
 
-    def filter(self, **filters):
+    def filter(self, *, filtering: Filter = None, **filters):
         # apply the given filters to self._stmt
         # filters example:
         #   first_name__in=["Alex", "John"]
@@ -78,6 +79,7 @@ class QuerySet:
                 column = getattr(model, attr)
                 op = operators.eq
             self._stmt = self._stmt.where(op(column, value))
+        # self._stmt = filtering.filter(self._stmt)
         return self
 
     def options(self, *args):
