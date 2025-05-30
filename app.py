@@ -49,3 +49,21 @@ async def get_active_only(repository: UsersRepository = Depends()):
 @app.get("/created-by", response_model=list[UserSchema])
 async def get_created_by(repository: UsersRepository = Depends()):
     return await repository.user_restricted(1).options('type').all()
+
+
+@app.get("/test")
+async def test(repository: UsersRepository = Depends()):
+    queryset = (
+        repository
+        .objects
+        .outerjoin("type")
+        # .filter(last_name='Иванов')
+        .filter(last_name__ilike='Иванов')
+        .filter(type__code='sh')
+        .filter(type__status__name__ilike='акт')
+        # .order_by('type__code')
+        # .order_by('-type__code')
+        # .order_by('type__status__name')
+        # .order_by('-last_name')
+    )
+    return await queryset.all()

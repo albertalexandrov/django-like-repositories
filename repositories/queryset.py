@@ -1,8 +1,12 @@
+import operator
+
 from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect
+from sqlalchemy import select, extract, inspect, column
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 from sqlalchemy.sql import operators
+
+from models import User
 
 
 class QuerySet:
@@ -57,6 +61,11 @@ class QuerySet:
         self._stmt = select(self._model)
         self._joins = {}
         self._options = []
+        self._filters = {}
+        self._ordering = set()
+        self._new_joins = {}
+        self._joined = {}
+        self._outerjoins = set()
 
     def filter(self, *, filtering: Filter = None, **filters):
         # apply the given filters to self._stmt
@@ -64,21 +73,25 @@ class QuerySet:
         #   first_name__in=["Alex", "John"]
         #   type__code="sh" - through relation
         #   etc
-        for attr, value in filters.items():
-            model = self._model
-            if "__" in attr:
-                for lookup in self._operators:
-                    if attr.endswith(f"__{lookup}"):
-                        op = self._operators[lookup]
-                        attr = attr[:-(len("__") + len(lookup))]
-                        break
-                else:
-                    op = operators.eq
-                column = self._extract_column(attr)
-            else:
-                column = getattr(model, attr)
-                op = operators.eq
-            self._stmt = self._stmt.where(op(column, value))
+
+        self._filters.update(filters)
+
+        # self._stmt = self._stmt.where(op(column, value))
+        # for attr, value in filters.items():
+        #     model = self._model
+        #     if "__" in attr:
+        #         for lookup in self._operators:
+        #             if attr.endswith(f"__{lookup}"):
+        #                 op = self._operators[lookup]
+        #                 attr = attr[:-(len("__") + len(lookup))]
+        #                 break
+        #         else:
+        #             op = operators.eq
+        #         column = self._extract_column(attr)
+        #     else:
+        #         column = getattr(model, attr)
+        #         op = operators.eq
+        #     self._stmt = self._stmt.where(op(column, value))
         # self._stmt = filtering.filter(self._stmt)
         return self
 
@@ -88,10 +101,11 @@ class QuerySet:
 
     def order_by(self, *ordering_fields):
         # apply ordering
-        for field in ordering_fields:
-            col = self._extract_column(field.lstrip("-+"))
-            col = col.desc() if field.startswith("-") else col.asc()
-            self._stmt = self._stmt.order_by(col)
+        self._ordering.add(*ordering_fields)
+        # for field in ordering_fields:
+        #     col = self._extract_column(field.lstrip("-+"))
+        #     col = col.desc() if field.startswith("-") else col.asc()
+        #     self._stmt = self._stmt.order_by(col)
         return self
 
     def _extract_column(self, field: str):
@@ -147,13 +161,113 @@ class QuerySet:
 
     async def all(self):
         self._build_stmt()
-        result = await self._session.scalars(self._stmt)
+
+        print(self._filters)
+        result = await self._session.scalars(self.query)
         return result.all()
 
     async def first(self):
         self._build_stmt()
         stmt = self._stmt.limit(1)
         return await self._session.scalar(stmt)
+
+    def _apply_where(self, stmt):
+        # first_name
+        # first_name__ilike
+        # type__code
+        # type__code__ilike
+        # type__status__code
+        # type__status__code__ilike
+        print()
+        for attr, value in self._filters.items():
+            print("attr", attr)
+            joins = self._joins
+            new_joins = self._new_joins
+            joined = self._joined
+            model = self._model
+            column, op = None, operators.eq
+            for a in attr.split("__"):
+                if o := getattr(model, a, None):
+                    relationships = inspect(model).relationships
+                    if a in relationships:
+                        model = relationships[a].mapper.class_
+                        joins = joins.setdefault(model, {})
+                        att = relationships[a].class_attribute
+                        # joined = joined.setdefault(att, {})
+                        # if att not in joined:
+                        #     stmt = stmt.join(att)
+                        new_joins = new_joins.setdefault(att, {})
+                        # self._new_joins.add(relationships[a])
+                    column = o
+                else:
+                    op = self._operators[a]
+            stmt = stmt.where(op(column, value))
+            print(column, op)
+            print(self._joins, end="\n\n")
+
+        return stmt
+
+    def _apply_order(self, stmt):
+        print("Сортировка", end="\n\n")
+        for field in self._ordering:
+            model = self._model
+            column = None
+            joins = self._joins
+            joined = self._joined
+            new_joins = self._new_joins
+            for a in field.lstrip("-+").split("__"):
+                print(a)
+                relationships = inspect(model).relationships
+                if a in relationships:
+                    model = relationships[a].mapper.class_
+                    joins = joins.setdefault(model, {})
+                    new_joins = new_joins.setdefault(relationships[a].class_attribute, {})
+                    att = relationships[a].class_attribute
+                    # joined = joined.setdefault(att, {})
+                    # if att not in joined:
+                    #     stmt = stmt.join(att)
+                else:
+                    column = getattr(model, a)
+            column = column.desc() if field.startswith("-") else column.asc()
+            stmt = stmt.order_by(column)
+
+            print(column)
+            print(self._joins, end="\n\n")
+        return stmt
+
+    def _apply_joins(self, stmt, joins):
+        print("joins ==> ", joins)
+        print(stmt)
+        for model in joins:
+            print(model)
+            stmt = stmt.join(model)
+            print("====>", stmt)
+            print("+++++", joins[model])
+            self._apply_joins(stmt, joins[model])
+        return stmt
+
+    def outerjoin(self, *joins):
+        self._outerjoins.add(*joins)
+        return self
+
+    @property
+    def query(self):
+        # {'first_name': 'Иван', 'last_name': 'Иванов'}
+        # class M(Base):
+        #     day: Mapped[date]
+        # m__day__day, m__day
+        # type__code, type__status__name__ilike
+
+
+        print("до жойнов", self._stmt)
+        stmt = self._apply_joins(self._stmt, self._new_joins)
+        stmt = self._apply_where(stmt)
+        print('stmt после wheere', stmt)
+        stmt = self._apply_order(stmt)
+        print("жойны====>", self._joined)
+        print(stmt)
+        print("_outerjoins", self._outerjoins)
+        return stmt
 
     # todo: methods
     #
