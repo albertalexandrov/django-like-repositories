@@ -1,7 +1,9 @@
 import operator
+from copy import deepcopy
+from typing import Self
 
 from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect, column
+from sqlalchemy import select, extract, inspect, Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 from sqlalchemy.sql import operators
@@ -59,195 +61,116 @@ class QuerySet:
         self._model = model
         self._session = session
         self._stmt = select(self._model)
+        self._options = {}
+        self._where = set()
         self._joins = {}
-        self._options = []
-        self._filters = {}
-        self._ordering = set()
-        self._new_joins = {}
-        self._joined = {}
-        self._outerjoins = set()
+        self._ordering_fields = set()
 
-    def filter(self, *, filtering: Filter = None, **filters):
+    def filter(self, *, filtering: Filter = None, **filters) -> Self:
         # apply the given filters to self._stmt
         # filters example:
         #   first_name__in=["Alex", "John"]
         #   type__code="sh" - through relation
         #   etc
-
-        self._filters.update(filters)
-
-        # self._stmt = self._stmt.where(op(column, value))
-        # for attr, value in filters.items():
-        #     model = self._model
-        #     if "__" in attr:
-        #         for lookup in self._operators:
-        #             if attr.endswith(f"__{lookup}"):
-        #                 op = self._operators[lookup]
-        #                 attr = attr[:-(len("__") + len(lookup))]
-        #                 break
-        #         else:
-        #             op = operators.eq
-        #         column = self._extract_column(attr)
-        #     else:
-        #         column = getattr(model, attr)
-        #         op = operators.eq
-        #     self._stmt = self._stmt.where(op(column, value))
-        # self._stmt = filtering.filter(self._stmt)
-        return self
-
-    def options(self, *args):
-        self._options.extend(args)
-        return self
-
-    def order_by(self, *ordering_fields):
-        # apply ordering
-        self._ordering.add(*ordering_fields)
-        # for field in ordering_fields:
-        #     col = self._extract_column(field.lstrip("-+"))
-        #     col = col.desc() if field.startswith("-") else col.asc()
-        #     self._stmt = self._stmt.order_by(col)
-        return self
-
-    def _extract_column(self, field: str):
-        # returns SQLAlchemy column by its string representation
-        # field example:
-        #    type__code - through relation
-        #    first_name
-        #    etc
-        model = self._model
-        attr_name = None
-        if "__" in field:
-            parts = field.split("__")
+        for field, value in filters.items():
+            model = self._model
+            column, op = None, operators.eq
             joins = self._joins
-            relationships = inspect(model).relationships
-            for part in parts:
-                if part in relationships:
-                    joins = joins.setdefault(part, {})
-                    model = relationships[part].mapper.class_
+            for attr in field.split("__"):
+                if mapped := getattr(model, attr, None):
                     relationships = inspect(model).relationships
-                    self._stmt = self._stmt.join(model)
+                    if attr in relationships:
+                        relationship = relationships[attr].class_attribute
+                        joins = joins.setdefault(relationship, {})
+                        model = relationships[attr].mapper.class_
+                    column = mapped
                 else:
-                    attr_name = part
-        else:
-            attr_name = field
-        return getattr(model, attr_name)
+                    op = self._operators[attr]
+            self._where.add(op(column, value))
+        return self
 
-    def apply_options(self):
-        for arg in self._options:
+    def options(self, *args: str) -> Self:
+        # todo: обработать отсутствие связи
+        for arg in args:
+            model = self._model
+            options = self._options
+            for attr in arg.split("__"):
+                relationships = inspect(model).relationships
+                relationship = relationships[attr].class_attribute
+                options = options.setdefault(relationship, {})
+                model = relationships[attr].mapper.class_
+        return self
+
+    def order_by(self, *fields: str) -> Self:
+        # todo: обработать одни и повторяющиеся поля
+        for field in fields:
+            model = self._model
+            column = None
             joins = self._joins
-            if "__" in arg:
-                first, rest = arg.split("__", 1)
-                start_option_column = getattr(self._model, first)
-                option = contains_eager(start_option_column) if first in joins else joinedload(start_option_column)
-                joins = joins.get(first, {})
-                relationships = inspect(self._model).relationships
-                model = relationships[first].mapper.class_
-                for i in rest.split("__"):
-                    n = getattr(model, i)
-                    if i in joins:
-                        option = option.contains(n)
-                    else:
-                        option = option.joinedload(n)
-                    relationships = inspect(model).relationships
-                    model = relationships[i].mapper.class_
-            else:
-                start_option_column = getattr(self._model, arg)
-                option = contains_eager(start_option_column) if arg in joins else joinedload(start_option_column)
-            self._stmt = self._stmt.options(option)
+            for attr in field.lstrip("-+").split("__"):
+                relationships = inspect(model).relationships
+                if attr in relationships:
+                    relationship = relationships[attr].class_attribute
+                    joins = joins.setdefault(relationship, {})
+                    model = relationships[attr].mapper.class_
+                else:
+                    column = getattr(model, attr)
+            column = column.desc() if field.startswith("-") else column.asc()
+            self._ordering_fields.add(column)
+        return self
 
-    def _build_stmt(self):
-        # builds final statement
-        self.apply_options()
+    def _apply_options(self, stmt: Select, options: dict, joins: dict, parent=None) -> Select:
+        options = deepcopy(options)
+        for option, value in options.items():
+            if option in joins:
+                parent = parent.contains_eager(option) if parent else contains_eager(option)
+            else:
+                parent = parent.joinedload(option) if parent else joinedload(option)
+            stmt = self._apply_options(stmt, value, joins.get(option, {}), parent)
+            stmt = stmt.options(parent)
+        return stmt
 
     async def all(self):
-        self._build_stmt()
-
-        print(self._filters)
         result = await self._session.scalars(self.query)
         return result.all()
 
     async def first(self):
-        self._build_stmt()
         stmt = self._stmt.limit(1)
         return await self._session.scalar(stmt)
 
-    def _apply_where(self, stmt):
-        # first_name
-        # first_name__ilike
-        # type__code
-        # type__code__ilike
-        # type__status__code
-        # type__status__code__ilike
-        print()
-        for attr, value in self._filters.items():
-            print("attr", attr)
-            joins = self._joins
-            new_joins = self._new_joins
-            joined = self._joined
-            model = self._model
-            column, op = None, operators.eq
-            for a in attr.split("__"):
-                if o := getattr(model, a, None):
-                    relationships = inspect(model).relationships
-                    if a in relationships:
-                        model = relationships[a].mapper.class_
-                        joins = joins.setdefault(model, {})
-                        att = relationships[a].class_attribute
-                        # joined = joined.setdefault(att, {})
-                        # if att not in joined:
-                        #     stmt = stmt.join(att)
-                        new_joins = new_joins.setdefault(att, {})
-                        # self._new_joins.add(relationships[a])
-                    column = o
-                else:
-                    op = self._operators[a]
-            stmt = stmt.where(op(column, value))
-            print(column, op)
-            print(self._joins, end="\n\n")
+    def _apply_where(self, stmt: Select) -> Select:
+        return stmt.where(*self._where)
 
+    def _apply_order(self, stmt: Select) -> Select:
+        return stmt.order_by(*list(self._ordering_fields))
+
+    def _apply_joins(self, stmt: Select, joins: dict) -> Select:
+        joins = deepcopy(joins)
+        for join, value in joins.items():
+            isouter = value.pop("isouter", False)
+            stmt = stmt.join(join, isouter=isouter)
+            stmt = self._apply_joins(stmt, value)
         return stmt
 
-    def _apply_order(self, stmt):
-        print("Сортировка", end="\n\n")
-        for field in self._ordering:
+    def outerjoin(self, *joins) -> Self:
+        return self._join(joins, isouter=True)
+
+    def innerjoin(self, *joins) -> Self:
+        return self._join(joins, isouter=False)
+
+    def _join(self, joins, isouter) -> Self:
+        for join in joins:
             model = self._model
-            column = None
-            joins = self._joins
-            joined = self._joined
-            new_joins = self._new_joins
-            for a in field.lstrip("-+").split("__"):
-                print(a)
+            nn_joins = self._joins
+            prev, last = None, None
+            for attr in join.split("__"):
                 relationships = inspect(model).relationships
-                if a in relationships:
-                    model = relationships[a].mapper.class_
-                    joins = joins.setdefault(model, {})
-                    new_joins = new_joins.setdefault(relationships[a].class_attribute, {})
-                    att = relationships[a].class_attribute
-                    # joined = joined.setdefault(att, {})
-                    # if att not in joined:
-                    #     stmt = stmt.join(att)
-                else:
-                    column = getattr(model, a)
-            column = column.desc() if field.startswith("-") else column.asc()
-            stmt = stmt.order_by(column)
-
-            print(column)
-            print(self._joins, end="\n\n")
-        return stmt
-
-    def _apply_joins(self, stmt, joins):
-        print("joins ==> ", joins)
-        print(stmt)
-        for model in joins:
-            print(model)
-            stmt = stmt.join(model)
-            print("====>", stmt)
-            print("+++++", joins[model])
-            self._apply_joins(stmt, joins[model])
-        return stmt
-
-    def outerjoin(self, *joins):
-        self._outerjoins.add(*joins)
+                relationship = relationships[attr]
+                prev = nn_joins
+                kl_attr = last = relationship.class_attribute
+                nn_joins = nn_joins.setdefault(kl_attr, {})
+                model = relationship.mapper.class_
+            prev[last]["isouter"] = isouter
         return self
 
     @property
@@ -257,16 +180,10 @@ class QuerySet:
         #     day: Mapped[date]
         # m__day__day, m__day
         # type__code, type__status__name__ilike
-
-
-        print("до жойнов", self._stmt)
-        stmt = self._apply_joins(self._stmt, self._new_joins)
+        stmt = self._apply_joins(self._stmt, self._joins)
         stmt = self._apply_where(stmt)
-        print('stmt после wheere', stmt)
         stmt = self._apply_order(stmt)
-        print("жойны====>", self._joined)
-        print(stmt)
-        print("_outerjoins", self._outerjoins)
+        stmt = self._apply_options(stmt, self._options, self._joins)
         return stmt
 
     # todo: methods

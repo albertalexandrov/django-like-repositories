@@ -56,14 +56,14 @@ async def test(repository: UsersRepository = Depends()):
     queryset = (
         repository
         .objects
-        .outerjoin("type")
+        .innerjoin("type")
         # .filter(last_name='Иванов')
-        .filter(last_name__ilike='Иванов')
-        .filter(type__code='sh')
-        .filter(type__status__name__ilike='акт')
+        # .filter(type__code='sh')
+        # .filter(type__status__name__ilike='акт')
         # .order_by('type__code')
         # .order_by('-type__code')
         # .order_by('type__status__name')
         # .order_by('-last_name')
+        .options("type__status")
     )
     return await queryset.all()
