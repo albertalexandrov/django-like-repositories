@@ -1,4 +1,3 @@
-import operator
 from copy import deepcopy
 from typing import Self
 
@@ -65,17 +64,29 @@ class QuerySet:
         self._where = set()
         self._joins = {}
         self._ordering_fields = set()
+        self._limit = None
+        self._offset = None
+
+    def _clone(self):
+        clone = self.__class__(self._model, self._session)
+        clone._model = self._model
+        clone._session = self._session
+        clone._stmt = self._stmt
+        clone._options = self._options
+        clone._where = self._where
+        clone._joins = self._joins
+        clone._ordering_fields = self._ordering_fields
+        clone._limit = self._limit
+        clone._offset = self._offset
+        return clone
 
     def filter(self, *, filtering: Filter = None, **filters) -> Self:
-        # apply the given filters to self._stmt
-        # filters example:
-        #   first_name__in=["Alex", "John"]
-        #   type__code="sh" - through relation
-        #   etc
+        # todo: применить filtering
+        obj = self._clone()
         for field, value in filters.items():
-            model = self._model
+            model = obj._model
             column, op = None, operators.eq
-            joins = self._joins
+            joins = obj._joins
             for attr in field.split("__"):
                 if mapped := getattr(model, attr, None):
                     relationships = inspect(model).relationships
@@ -85,28 +96,32 @@ class QuerySet:
                         model = relationships[attr].mapper.class_
                     column = mapped
                 else:
-                    op = self._operators[attr]
-            self._where.add(op(column, value))
-        return self
+                    op = obj._operators[attr]
+            obj._where.add(op(column, value))
+        return obj
 
-    def options(self, *args: str) -> Self:
+    def options(self, *fields: str) -> Self:
         # todo: обработать отсутствие связи
-        for arg in args:
-            model = self._model
-            options = self._options
-            for attr in arg.split("__"):
+        obj = self._clone()
+        for field in fields:
+            model = obj._model
+            options = obj._options
+            joins = obj._joins
+            for attr in field.split("__"):
                 relationships = inspect(model).relationships
                 relationship = relationships[attr].class_attribute
                 options = options.setdefault(relationship, {})
+                joins = joins.setdefault(relationship, {})
                 model = relationships[attr].mapper.class_
-        return self
+        return obj
 
     def order_by(self, *fields: str) -> Self:
         # todo: обработать одни и повторяющиеся поля
+        obj = self._clone()
         for field in fields:
-            model = self._model
+            model = obj._model
             column = None
-            joins = self._joins
+            joins = obj._joins
             for attr in field.lstrip("-+").split("__"):
                 relationships = inspect(model).relationships
                 if attr in relationships:
@@ -116,17 +131,19 @@ class QuerySet:
                 else:
                     column = getattr(model, attr)
             column = column.desc() if field.startswith("-") else column.asc()
-            self._ordering_fields.add(column)
-        return self
+            obj._ordering_fields.add(column)
+        return obj
 
     def _apply_options(self, stmt: Select, options: dict, joins: dict, parent=None) -> Select:
+        obj = self._clone()
         options = deepcopy(options)
         for option, value in options.items():
+            print(option)
             if option in joins:
                 parent = parent.contains_eager(option) if parent else contains_eager(option)
             else:
                 parent = parent.joinedload(option) if parent else joinedload(option)
-            stmt = self._apply_options(stmt, value, joins.get(option, {}), parent)
+            stmt = obj._apply_options(stmt, value, joins.get(option, {}), parent)
             stmt = stmt.options(parent)
         return stmt
 
@@ -135,8 +152,9 @@ class QuerySet:
         return result.all()
 
     async def first(self):
-        stmt = self._stmt.limit(1)
-        return await self._session.scalar(stmt)
+        obj = self._clone()
+        obj._limit = 1
+        return await self._session.scalar(obj.query)
 
     def _apply_where(self, stmt: Select) -> Select:
         return stmt.where(*self._where)
@@ -159,9 +177,10 @@ class QuerySet:
         return self._join(joins, isouter=False)
 
     def _join(self, joins, isouter) -> Self:
+        obj = self._clone()
         for join in joins:
-            model = self._model
-            nn_joins = self._joins
+            model = obj._model
+            nn_joins = obj._joins
             prev, last = None, None
             for attr in join.split("__"):
                 relationships = inspect(model).relationships
@@ -171,19 +190,39 @@ class QuerySet:
                 nn_joins = nn_joins.setdefault(kl_attr, {})
                 model = relationship.mapper.class_
             prev[last]["isouter"] = isouter
-        return self
+        return obj
+
+    def limit(self, limit: int) -> Self:
+        obj = self._clone()
+        obj._limit = limit
+        return obj
+
+    def offset(self, offset: int) -> Self:
+        obj = self._clone()
+        obj._offset = offset
+        return obj
 
     @property
     def query(self):
-        # {'first_name': 'Иван', 'last_name': 'Иванов'}
-        # class M(Base):
+        # todo:
+        #  рассмотреть кейс, когда название поля модели совпадает в lookup-ом
+        #  class M(Base):
         #     day: Mapped[date]
-        # m__day__day, m__day
-        # type__code, type__status__name__ilike
+        #  m__day__day, m__day
         stmt = self._apply_joins(self._stmt, self._joins)
+        stmt = self._apply_options(stmt, self._options, self._joins)
         stmt = self._apply_where(stmt)
         stmt = self._apply_order(stmt)
-        stmt = self._apply_options(stmt, self._options, self._joins)
+        if self._limit or self._offset:
+            subquery = select(self._model.id)
+            subquery = self._apply_joins(subquery, self._joins)
+            subquery = self._apply_where(subquery)
+            # сортировка не нужна
+            if self._limit is not None:
+                subquery = subquery.limit(self._limit)
+            if self._offset is not None:
+                subquery = subquery.offset(self._offset)
+            stmt = stmt.where(self._model.id.in_(subquery))
         return stmt
 
     # todo: methods

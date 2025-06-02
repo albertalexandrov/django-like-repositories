@@ -30,3 +30,12 @@ class User(Base):
     type: Mapped["UserType"] = relationship(back_populates="users")
     is_active: Mapped[bool] = mapped_column(default=True, server_default=true())
     created_by_id: Mapped[int | None]
+    documents: Mapped[list["Document"]] = relationship(back_populates="user")
+
+
+class Document(Base):
+    __tablename__ = 'documents'
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    user: Mapped["User"] = relationship(back_populates="documents")
+    name: Mapped[str | None]
