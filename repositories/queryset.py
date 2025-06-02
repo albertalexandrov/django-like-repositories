@@ -7,15 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 from sqlalchemy.sql import operators
 
-from models import User
-
 
 class QuerySet:
-    """
-    Wrapper for SQLAlchemy session for frequently used cases like filtering with Django like lookups
-    Implements builder pattern to build SQLAlchemy statement step by step
-    Made for simplified use to fields na d relations
-    """
     _operators = {
         'in': operators.in_op,
         'isnull': lambda c, v: (c == None) if v else (c != None),
