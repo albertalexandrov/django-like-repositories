@@ -26,7 +26,9 @@ class DatabaseSettings(BaseModel):
 class Settings(BaseSettings):
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
 
-    model_config = SettingsConfigDict(env_prefix="DJANGO_LIKE_REPOSITORIES__", env_nested_delimiter="__")
+    model_config = SettingsConfigDict(
+        env_prefix="DJANGO_LIKE_REPOSITORIES__", env_nested_delimiter="__"
+    )
 
 
 settings = Settings(_env_file=".env")

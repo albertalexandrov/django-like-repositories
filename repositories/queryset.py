@@ -10,43 +10,43 @@ from sqlalchemy.sql import operators
 
 class QuerySet:
     _operators = {
-        'in': operators.in_op,
-        'isnull': lambda c, v: (c == None) if v else (c != None),
-        'exact': operators.eq,
-        'eq': operators.eq,
-        'ne': operators.ne,
-        'gt': operators.gt,
-        'ge': operators.ge,
-        'lt': operators.lt,
-        'le': operators.le,
-        'notin': operators.notin_op,
-        'between': lambda c, v: c.between(v[0], v[1]),
-        'like': operators.like_op,
-        'ilike': operators.ilike_op,
-        'startswith': operators.startswith_op,
-        'istartswith': lambda c, v: c.ilike(v + '%'),
-        'endswith': operators.endswith_op,
-        'iendswith': lambda c, v: c.ilike('%' + v),
-        'contains': lambda c, v: c.like(f'%{v}%'),
-        'icontains': lambda c, v: c.ilike(f'%{v}%'),
-        'year': lambda c, v: extract('year', c) == v,
-        'year_ne': lambda c, v: extract('year', c) != v,
-        'year_gt': lambda c, v: extract('year', c) > v,
-        'year_ge': lambda c, v: extract('year', c) >= v,
-        'year_lt': lambda c, v: extract('year', c) < v,
-        'year_le': lambda c, v: extract('year', c) <= v,
-        'month': lambda c, v: extract('month', c) == v,
-        'month_ne': lambda c, v: extract('month', c) != v,
-        'month_gt': lambda c, v: extract('month', c) > v,
-        'month_ge': lambda c, v: extract('month', c) >= v,
-        'month_lt': lambda c, v: extract('month', c) < v,
-        'month_le': lambda c, v: extract('month', c) <= v,
-        'day': lambda c, v: extract('day', c) == v,
-        'day_ne': lambda c, v: extract('day', c) != v,
-        'day_gt': lambda c, v: extract('day', c) > v,
-        'day_ge': lambda c, v: extract('day', c) >= v,
-        'day_lt': lambda c, v: extract('day', c) < v,
-        'day_le': lambda c, v: extract('day', c) <= v,
+        "in": operators.in_op,
+        "isnull": lambda c, v: (c == None) if v else (c != None),
+        "exact": operators.eq,
+        "eq": operators.eq,
+        "ne": operators.ne,
+        "gt": operators.gt,
+        "ge": operators.ge,
+        "lt": operators.lt,
+        "le": operators.le,
+        "notin": operators.notin_op,
+        "between": lambda c, v: c.between(v[0], v[1]),
+        "like": operators.like_op,
+        "ilike": operators.ilike_op,
+        "startswith": operators.startswith_op,
+        "istartswith": lambda c, v: c.ilike(v + "%"),
+        "endswith": operators.endswith_op,
+        "iendswith": lambda c, v: c.ilike("%" + v),
+        "contains": lambda c, v: c.like(f"%{v}%"),
+        "icontains": lambda c, v: c.ilike(f"%{v}%"),
+        "year": lambda c, v: extract("year", c) == v,
+        "year_ne": lambda c, v: extract("year", c) != v,
+        "year_gt": lambda c, v: extract("year", c) > v,
+        "year_ge": lambda c, v: extract("year", c) >= v,
+        "year_lt": lambda c, v: extract("year", c) < v,
+        "year_le": lambda c, v: extract("year", c) <= v,
+        "month": lambda c, v: extract("month", c) == v,
+        "month_ne": lambda c, v: extract("month", c) != v,
+        "month_gt": lambda c, v: extract("month", c) > v,
+        "month_ge": lambda c, v: extract("month", c) >= v,
+        "month_lt": lambda c, v: extract("month", c) < v,
+        "month_le": lambda c, v: extract("month", c) <= v,
+        "day": lambda c, v: extract("day", c) == v,
+        "day_ne": lambda c, v: extract("day", c) != v,
+        "day_gt": lambda c, v: extract("day", c) > v,
+        "day_ge": lambda c, v: extract("day", c) >= v,
+        "day_lt": lambda c, v: extract("day", c) < v,
+        "day_le": lambda c, v: extract("day", c) <= v,
     }
 
     def __init__(self, model, session: AsyncSession):
@@ -134,9 +134,15 @@ class QuerySet:
             option = None
             for relation in relations:
                 if relation in joins:
-                    option = option.contains_eager(relation) if option else contains_eager(relation)
+                    option = (
+                        option.contains_eager(relation)
+                        if option
+                        else contains_eager(relation)
+                    )
                 else:
-                    option = option.joinedload(relation) if option else joinedload(relation)
+                    option = (
+                        option.joinedload(relation) if option else joinedload(relation)
+                    )
                 joins = joins.get(relation, {})
             stmt = stmt.options(option)
         return stmt

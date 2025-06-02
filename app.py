@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
+from repositories.help import SectionRepository
 from repositories.users import UsersRepository
 from schemas import CreateUserSchema, UserSchema
 
@@ -9,7 +10,9 @@ app = FastAPI()
 
 
 @app.post("/user", response_model=UserSchema, status_code=201)
-async def create_user(data: CreateUserSchema, session: AsyncSession = Depends(get_session)):
+async def create_user(
+    data: CreateUserSchema, session: AsyncSession = Depends(get_session)
+):
     async with session.begin():
         repository = UsersRepository(session)
         user = await repository.create(**data.model_dump())
@@ -18,12 +21,20 @@ async def create_user(data: CreateUserSchema, session: AsyncSession = Depends(ge
 
 @app.get("/first")
 async def get_first(repository: UsersRepository = Depends()):
-    return await repository.objects.filter(id=1).options('type__status', 'type__change_logs', 'documents').first()
+    return (
+        await repository.objects.filter(id=1)
+        .options("type__status", "type__change_logs", "documents")
+        .first()
+    )
 
 
 @app.get("/ordering", response_model=list[UserSchema])
 async def get_ordering(repository: UsersRepository = Depends()):
-    return await repository.objects.order_by("-first_name", "-last_name").options("type").all()
+    return (
+        await repository.objects.order_by("-first_name", "-last_name")
+        .options("type")
+        .all()
+    )
 
 
 @app.get("/icontains", response_model=list[UserSchema])
@@ -38,32 +49,23 @@ async def get_select_related(repository: UsersRepository = Depends()):
 
 @app.get("/order-by", response_model=list[UserSchema])
 async def get_select_related(repository: UsersRepository = Depends()):
-    return await repository.objects.options('type').order_by("type__description").all()
+    return await repository.objects.options("type").order_by("type__description").all()
 
 
 @app.get("/active-only", response_model=list[UserSchema])
 async def get_active_only(repository: UsersRepository = Depends()):
-    return await repository.active.options('type').order_by('id').all()
+    return await repository.active.options("type").order_by("id").all()
 
 
 @app.get("/created-by", response_model=list[UserSchema])
 async def get_created_by(repository: UsersRepository = Depends()):
-    return await repository.user_restricted(1).options('type').all()
+    return await repository.user_restricted(1).options("type").all()
 
 
 @app.get("/test")
-async def test(repository: UsersRepository = Depends()):
+async def test(repository: SectionRepository = Depends()):
     queryset = (
         repository
-        .objects
-        .outerjoin("type", "type__status", "documents")
-        # .filter(last_name='Иванов')
-        # .filter(type__code='sh')
-        # .filter(type__status__name__ilike='акт')
-        # .order_by('type__code')
-        # .order_by('-type__code')
-        .order_by('type__status__name')
-        # .order_by('-last_name')
-        .options("type__status", "type__change_logs", "documents")
+        .published
     )
     return await queryset.all()

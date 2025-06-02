@@ -6,6 +6,7 @@ class UserSchema(BaseModel):
         id: int
         code: str
         description: str
+
     id: int
     first_name: str
     last_name: str
