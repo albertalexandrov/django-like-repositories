@@ -1,9 +1,7 @@
 from fastapi import FastAPI, Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
-from models import User
 from repositories.users import UsersRepository
 from schemas import CreateUserSchema, UserSchema
 
@@ -18,9 +16,9 @@ async def create_user(data: CreateUserSchema, session: AsyncSession = Depends(ge
     return user
 
 
-@app.get("/first", response_model=UserSchema)
+@app.get("/first")
 async def get_first(repository: UsersRepository = Depends()):
-    return await repository.objects.filter(id=1).options('type__status', 'documents').first()
+    return await repository.objects.filter(id=1).options('type__status', 'type__change_logs', 'documents').first()
 
 
 @app.get("/ordering", response_model=list[UserSchema])

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import ForeignKey, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,6 +13,14 @@ class UserTypeStatus(Base):
     user_types: Mapped[list["UserType"]] = relationship(back_populates="status")
 
 
+class UserTypeChangeLog(Base):
+    __tablename__ = 'user_type_change_log'
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    user_type_id: Mapped[int] = mapped_column(ForeignKey('user_types.id'))
+    user_type: Mapped["UserType"] = relationship(back_populates="change_logs")
+
+
 class UserType(Base):
     __tablename__ = 'user_types'
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -19,6 +29,7 @@ class UserType(Base):
     users: Mapped[list["User"]] = relationship(back_populates="type")
     status_id: Mapped[int | None] = mapped_column(ForeignKey('user_status_types.id'), nullable=True)
     status: Mapped["UserTypeStatus"] = relationship(back_populates="user_types")
+    change_logs: Mapped[list["UserTypeChangeLog"]] = relationship(back_populates="user_type")
 
 
 class User(Base):

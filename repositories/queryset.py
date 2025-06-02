@@ -134,18 +134,31 @@ class QuerySet:
             obj._ordering_fields.add(column)
         return obj
 
-    def _apply_options(self, stmt: Select, options: dict, joins: dict, parent=None) -> Select:
+    def _apply_options(self, stmt: Select) -> Select:
         obj = self._clone()
-        options = deepcopy(options)
-        for option, value in options.items():
-            print(option)
-            if option in joins:
-                parent = parent.contains_eager(option) if parent else contains_eager(option)
-            else:
-                parent = parent.joinedload(option) if parent else joinedload(option)
-            stmt = obj._apply_options(stmt, value, joins.get(option, {}), parent)
-            stmt = stmt.options(parent)
+        for relations in obj._flat_options(obj._options):
+            joins = obj._joins
+            option = None
+            for relation in relations:
+                if relation in joins:
+                    option = option.contains_eager(relation) if option else contains_eager(relation)
+                else:
+                    option = option.joinedload(relation) if option else joinedload(relation)
+                joins = joins.get(relation, {})
+            stmt = stmt.options(option)
         return stmt
+
+    def _flat_options(self, options, prefix=None):
+        if prefix is None:
+            prefix = []
+        result = []
+        for key, value in options.items():
+            new_prefix = prefix + [key]
+            if isinstance(value, dict) and not value:
+                result.append(new_prefix)
+            elif isinstance(value, dict):
+                result.extend(self._flat_options(value, new_prefix))
+        return result
 
     async def all(self):
         result = await self._session.scalars(self.query)
@@ -210,7 +223,7 @@ class QuerySet:
         #     day: Mapped[date]
         #  m__day__day, m__day
         stmt = self._apply_joins(self._stmt, self._joins)
-        stmt = self._apply_options(stmt, self._options, self._joins)
+        stmt = self._apply_options(stmt)
         stmt = self._apply_where(stmt)
         stmt = self._apply_order(stmt)
         if self._limit or self._offset:
