@@ -162,7 +162,7 @@ class QuerySet:
 
     async def all(self):
         result = await self._session.scalars(self.query)
-        return result.all()
+        return result.unique().all()
 
     async def first(self):
         obj = self._clone()
@@ -236,6 +236,7 @@ class QuerySet:
             if self._offset is not None:
                 subquery = subquery.offset(self._offset)
             stmt = stmt.where(self._model.id.in_(subquery))
+
         return stmt
 
     # todo: methods

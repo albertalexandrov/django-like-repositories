@@ -56,7 +56,7 @@ async def test(repository: UsersRepository = Depends()):
     queryset = (
         repository
         .objects
-        .innerjoin("type")
+        .outerjoin("type", "type__status", "documents")
         # .filter(last_name='Иванов')
         # .filter(type__code='sh')
         # .filter(type__status__name__ilike='акт')
@@ -64,6 +64,6 @@ async def test(repository: UsersRepository = Depends()):
         # .order_by('-type__code')
         .order_by('type__status__name')
         # .order_by('-last_name')
-        .options("type__status", "documents")
+        .options("type__status", "type__change_logs", "documents")
     )
     return await queryset.all()
