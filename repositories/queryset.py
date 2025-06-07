@@ -2,10 +2,14 @@ from copy import deepcopy
 from typing import Self
 
 from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect, Select
+from sqlalchemy import select, extract, inspect, Select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 from sqlalchemy.sql import operators
+
+# todo:
+#  по идее подзапрос нужно строить только тогда, когда нужно подгрузить options
+#  без них же можно применить distinct
 
 
 class QuerySet:
@@ -61,6 +65,7 @@ class QuerySet:
         self._offset = None
 
     def _clone(self):
+        # todo: проверить, что происходит с изменяемыми атрибутами при изменении этих атрибутов в копиях
         clone = self.__class__(self._model, self._session)
         clone._model = self._model
         clone._session = self._session
@@ -215,12 +220,30 @@ class QuerySet:
         return obj
 
     @property
+    def _model_pk(self):
+        # todo: проверить составные первичные ключи
+        return inspect(self._model).primary_key
+
+    def _get_count_stmt(self):
+        stmt = select(func.count(func.distinct(*self._model_pk))).select_from(self._model)
+        stmt = self._apply_joins(stmt, self._joins)
+        stmt = self._apply_where(stmt)
+        return stmt
+
+    async def count(self):
+        obj = self._clone()
+        stmt = obj._get_count_stmt()
+        return await self._session.scalar(stmt)
+
+    @property
     def query(self):
         # todo:
         #  рассмотреть кейс, когда название поля модели совпадает в lookup-ом
         #  class M(Base):
         #     day: Mapped[date]
         #  m__day__day, m__day
+        # todo:
+        #  options добавляет в select полей. если options не заданы, то можно не делать подзапрос
         stmt = self._apply_joins(self._stmt, self._joins)
         stmt = self._apply_options(stmt)
         stmt = self._apply_where(stmt)

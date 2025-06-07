@@ -99,7 +99,7 @@ def upgrade() -> None:
         sa.Column("status_id", sa.Integer(), nullable=False),
         sa.ForeignKeyConstraint(
             ["section_id"],
-            ["subsections.id"],
+            ["sections.id"],
         ),
         sa.ForeignKeyConstraint(
             ["status_id"],

@@ -66,6 +66,8 @@ async def get_created_by(repository: UsersRepository = Depends()):
 async def test(repository: SectionRepository = Depends()):
     queryset = (
         repository
-        .published
+        .objects
+        # .outerjoin("subsections")
+        .options("subsections")
     )
-    return await queryset.all()
+    return await queryset.count()
