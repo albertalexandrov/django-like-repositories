@@ -61,7 +61,7 @@ class QuerySet:
     def __init__(self, model, session: AsyncSession):
         self._model = model
         self._session = session
-        self._stmt = select(self._model)
+        self._stmt = select(self._model)  # todo: перенести формирования запроса в отдельный класс
         self._options = {}
         self._where = set()
         self._joins = {}
