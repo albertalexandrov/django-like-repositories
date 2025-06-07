@@ -1,10 +1,12 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from dependencies import get_session
 from repositories.help import SectionRepository
 from repositories.users import UsersRepository
 from schemas import CreateUserSchema, UserSchema
+from models.help import Section
 
 app = FastAPI()
 
@@ -63,11 +65,18 @@ async def get_created_by(repository: UsersRepository = Depends()):
 
 
 @app.get("/test")
-async def test(repository: SectionRepository = Depends()):
+async def test(session: AsyncSession = Depends(get_session), repository: SectionRepository = Depends()):
     queryset = (
         repository
         .objects
-        # .outerjoin("subsections")
+        .filter(id=100)
         .options("subsections")
     )
-    return await queryset.count()
+    return await queryset.get_one_or_raise(ValueError("не найдено!"))
+
+
+@app.get("/test-on-session")
+async def test_on_session(session: AsyncSession = Depends(get_session)):
+    stmt = select(Section)
+    result = await session.scalars(stmt)
+    result.one()

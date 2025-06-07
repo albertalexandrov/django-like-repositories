@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 from sqlalchemy.sql import operators
 
+from exceptions import ObjectNotFoundError
+
+
 # todo:
 #  по идее подзапрос нужно строить только тогда, когда нужно подгрузить options
 #  без них же можно применить distinct
@@ -230,10 +233,22 @@ class QuerySet:
         stmt = self._apply_where(stmt)
         return stmt
 
-    async def count(self):
+    async def count(self) -> int:
         obj = self._clone()
         stmt = obj._get_count_stmt()
-        return await self._session.scalar(stmt)
+        return await obj._session.scalar(stmt)
+
+    async def get_one_or_raise(self, exc: Exception = ObjectNotFoundError):
+        # если делать в Django, то есть давать возможность осуществлять фильтрацию как в методе get,
+        # то может возникнуть коллизия в названиях фильтра и exc
+        # todo: может два сразу запрашивать?
+        obj = self._clone()
+        count = await self.count()
+        if count == 0:
+            raise exc
+        elif count > 1:
+            raise ValueError  # MultipleObjectsReturned  # todo: поменять значение
+        return await obj.first()
 
     @property
     def query(self):
