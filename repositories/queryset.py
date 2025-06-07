@@ -266,7 +266,7 @@ class QuerySet:
         except ObjectNotFoundError:
             defaults = defaults or {}
             instance = self._model(**kwargs, **defaults)
-            self._session.add(instance)
+            self._session.add(instance)  # todo: обработать integrityerror
             await self._session.flush([instance])
             return instance, True
 
