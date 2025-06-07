@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Self
+from typing import Self, TypeVar
 
 from fastapi_filter.contrib.sqlalchemy import Filter
 from sqlalchemy import select, extract, inspect, Select, func
@@ -9,6 +9,7 @@ from sqlalchemy.sql import operators
 
 from exceptions import ObjectNotFoundError
 
+Model = TypeVar("Model")
 
 # todo:
 #  по идее подзапрос нужно строить только тогда, когда нужно подгрузить options
@@ -238,7 +239,7 @@ class QuerySet:
         stmt = obj._get_count_stmt()
         return await obj._session.scalar(stmt)
 
-    async def get_one_or_raise(self, exc: Exception = ObjectNotFoundError):
+    async def get_one_or_raise(self, exc: Exception = ObjectNotFoundError) -> Model:
         # если делать в Django, то есть давать возможность осуществлять фильтрацию как в методе get,
         # то может возникнуть коллизия в названиях фильтра и exc
         # todo: может два сразу запрашивать?
@@ -247,6 +248,13 @@ class QuerySet:
         if count == 0:
             raise exc
         elif count > 1:
+            raise ValueError  # MultipleObjectsReturned  # todo: поменять значение
+        return await obj.first()
+
+    async def get_one_or_none(self) -> Model | None:
+        obj = self._clone()
+        count = await self.count()
+        if count > 1:
             raise ValueError  # MultipleObjectsReturned  # todo: поменять значение
         return await obj.first()
 
