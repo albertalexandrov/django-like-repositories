@@ -6,6 +6,7 @@ from sqlalchemy import select, extract, inspect, Select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager
 from sqlalchemy.sql import operators
+import django
 
 from exceptions import ObjectNotFoundError
 
@@ -257,6 +258,17 @@ class QuerySet:
         if count > 1:
             raise ValueError  # MultipleObjectsReturned  # todo: поменять значение
         return await obj.first()
+
+    async def get_or_create(self, defaults=None, **kwargs) -> tuple:
+        obj = self._clone()
+        try:
+            return await obj.filter(**kwargs).get_one_or_raise(ObjectNotFoundError), False
+        except ObjectNotFoundError:
+            defaults = defaults or {}
+            instance = self._model(**kwargs, **defaults)
+            self._session.add(instance)
+            await self._session.flush([instance])
+            return instance, True
 
     @property
     def query(self):

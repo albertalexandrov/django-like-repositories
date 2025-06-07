@@ -69,10 +69,9 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
     queryset = (
         repository
         .objects
-        .filter(id=100)
-        .options("subsections")
+        .filter(name="name")
     )
-    return await queryset.get_one_or_raise(ValueError("не найдено!"))
+    return await queryset.get_or_create(name="test", defaults={"status_id": 1})
 
 
 @app.get("/test-on-session")
