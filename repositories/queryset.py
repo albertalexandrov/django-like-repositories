@@ -288,6 +288,8 @@ class QuerySet:
         obj.update(**update_defaults)
         return obj, False
 
+    # note: bulk_update как по мне не нужен
+
     async def bulk_create(self, values: list[dict[str, Any]]) -> list:
         # todo: параметры flush, commit?
         instances = [self._model(**item) for item in values]
