@@ -74,7 +74,7 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
     )
     status_id = random.choice([1, 2])
     print(status_id)
-    return await queryset.update_or_create(name="test1", defaults={"status_id": status_id})
+    return await queryset.in_bulk(id_list=[1], field_name="status_id")
 
 
 @app.get("/test-on-session")

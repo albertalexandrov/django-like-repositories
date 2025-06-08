@@ -297,6 +297,19 @@ class QuerySet:
         await self._session.flush([instances])
         return instances
 
+    async def in_bulk(self, id_list=None, *, field_name="id") -> dict[Any:Model]:
+        # todo: учесть составные первичные ключи
+        if id_list is not None:
+            if not id_list:
+                return {}
+            filter_key = "{}__in".format(field_name)
+            id_list = tuple(id_list)
+            qs = self.filter(**{filter_key: id_list})
+        else:
+            qs = self._clone()
+        instances = await qs.all()
+        return {getattr(obj, field_name): obj for obj in instances}
+
     @property
     def query(self):
         # todo:
