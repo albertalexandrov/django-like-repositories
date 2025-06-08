@@ -1,3 +1,5 @@
+import random
+
 from fastapi import FastAPI, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -69,9 +71,10 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
     queryset = (
         repository
         .objects
-        .filter(name="name")
     )
-    return await queryset.get_or_create(name="test", defaults={"status_id": 1})
+    status_id = random.choice([1, 2])
+    print(status_id)
+    return await queryset.update_or_create(name="test1", defaults={"status_id": status_id})
 
 
 @app.get("/test-on-session")

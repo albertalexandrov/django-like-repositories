@@ -246,6 +246,7 @@ class QuerySet:
         # todo: может два сразу запрашивать?
         obj = self._clone()
         count = await self.count()
+        print("==> count", count)
         if count == 0:
             raise exc
         elif count > 1:
@@ -259,16 +260,33 @@ class QuerySet:
             raise ValueError  # MultipleObjectsReturned  # todo: поменять значение
         return await obj.first()
 
-    async def get_or_create(self, defaults=None, **kwargs) -> tuple:
+    async def get_or_create(self, defaults=None, **kwargs) -> tuple[Model, bool]:
+        # todo: выполнить проверки, что атрибуты у модели существуют
+        # todo: параметры flush, commit?
         obj = self._clone()
         try:
-            return await obj.filter(**kwargs).get_one_or_raise(ObjectNotFoundError), False
+            instance = await obj.filter(**kwargs).get_one_or_raise(ObjectNotFoundError)
+            return instance, False
         except ObjectNotFoundError:
             defaults = defaults or {}
-            instance = self._model(**kwargs, **defaults)
-            self._session.add(instance)  # todo: обработать integrityerror
-            await self._session.flush([instance])
+            params = {**kwargs, **defaults}
+            instance = obj._model(**params)
+            obj._session.add(instance)  # todo: обработать integrityerror
+            await obj._session.flush([instance])
             return instance, True
+
+    async def update_or_create(self, defaults=None, create_defaults=None, **kwargs) -> tuple[Model, bool]:
+        # todo: выполнить проверки, что атрибуты у модели существуют
+        # todo: параметры flush, commit?
+        obj = self._clone()
+        update_defaults = defaults or {}
+        if create_defaults is None:
+            create_defaults = update_defaults
+        obj, created = await obj.get_or_create(create_defaults, **kwargs)
+        if created:
+            return obj, created
+        obj.update(**update_defaults)
+        return obj, False
 
     @property
     def query(self):
