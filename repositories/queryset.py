@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Self, TypeVar
+from typing import Self, TypeVar, Any
 
 from fastapi_filter.contrib.sqlalchemy import Filter
 from sqlalchemy import select, extract, inspect, Select, func
@@ -287,6 +287,13 @@ class QuerySet:
             return obj, created
         obj.update(**update_defaults)
         return obj, False
+
+    async def bulk_create(self, values: list[dict[str, Any]]) -> list:
+        # todo: параметры flush, commit?
+        instances = [self._model(**item) for item in values]
+        self._session.add_all(instances)
+        await self._session.flush([instances])
+        return instances
 
     @property
     def query(self):
