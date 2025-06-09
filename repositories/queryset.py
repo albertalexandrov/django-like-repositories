@@ -376,28 +376,18 @@ class QuerySet:
     # async def update(self):
     #     pass
 
-    def get_delete_stmt(self, returning: str | list[str] = None):
+    def get_delete_stmt(self):
         stmt = select(func.distinct(self._model.id))
         stmt = self._apply_joins(stmt, self._joins)
         stmt = self._apply_where(stmt)
         stmt = delete(self._model).where(self._model.id.in_(stmt))
-        if returning == 'all':
-            stmt = stmt.returning(self._model)
-        elif isinstance(returning, Iterable):
-            returning = [getattr(self._model, item) for item in returning]
-            stmt = stmt.returning(*returning)
+        if self._returning:
+            stmt = stmt.returning(*self._returning)
         return stmt
 
-    async def delete(self, returning: str | list[str] = None, scalar: bool = False) -> list[Any] | Any | CursorResult:
+    async def delete(self) -> Result[Model]:
         # todo: поработать над returning, scalar, mappings
-        stmt = self.get_delete_stmt(returning)
-        # if returning:
-        #     if isinstance(returning, Iterable):
-        #         result = await self._session.execute(stmt)
-        #     else:
-        #         result = await self._session.scalars(stmt)
-        #     return result.mappings().all()
-        # на случай, если понадобится сырой результат выполнения запроса
+        stmt = self.get_delete_stmt()
         return await self._session.execute(stmt)
 
     def get_update_stmt(self, values):

@@ -74,11 +74,9 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
         .filter(subsections__status__code="unpublished")
         .returning('id', 'name')
     )
-    result = await queryset.update(name="ОБНОВЛЕНО")
+    result = await queryset.delete()
     rer = result.mappings().all()
-    print(rer)
     return rer
-    return [(6, 'Личный кабинет подрядчика ТС5')]
 
 
 @app.get("/test-on-session")
