@@ -4,8 +4,10 @@ from typing import Self, TypeVar, Any
 from fastapi_filter.contrib.sqlalchemy import Filter
 from sqlalchemy import select, extract, inspect, Select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, contains_eager
+from sqlalchemy.orm import joinedload, contains_eager, selectinload
 from sqlalchemy.sql import operators
+from models import PublicationStatus, Section, Subsection
+
 import django
 
 from exceptions import ObjectNotFoundError
@@ -299,6 +301,19 @@ class QuerySet:
 
     async def in_bulk(self, id_list=None, *, field_name="id") -> dict[Any:Model]:
         # todo: учесть составные первичные ключи
+        # todo: выполнить проверки, что атрибуты у модели существуют
+        # s = (
+        #     select(self._model)
+        #     .join(self._model.subsections)
+        #     .join(Subsection.article_contents)
+        #     .where(self._model.name == "csdcds", PublicationStatus.code == "sdcsdc")
+        #     .options(
+        #         contains_eager(self._model.subsections).contains_eager(Subsection.article_contents),
+        #         joinedload(self._model.status)
+        #     )
+        # )
+        # res = (await self._session.scalars(s)).all()
+        # i = inspect(s)
         if id_list is not None:
             if not id_list:
                 return {}
@@ -310,6 +325,12 @@ class QuerySet:
         instances = await qs.all()
         return {getattr(obj, field_name): obj for obj in instances}
 
+    # async def iterate(self, chunk_size: int = 1000):
+    #     obj = self._clone()
+    # todo:
+    #  если запрашивать при помощи limit/offset, то нужно поле для сортировки, которое бы давало стабильный результат
+    #  вроде еще можно при помощи серверных курсоров - нужно изучить
+
     @property
     def query(self):
         # todo:
@@ -318,13 +339,22 @@ class QuerySet:
         #     day: Mapped[date]
         #  m__day__day, m__day
         # todo:
-        #  options добавляет в select полей. если options не заданы, то можно не делать подзапрос
-        stmt = self._apply_joins(self._stmt, self._joins)
+        #  для оптимизации создания запроса рассмотреть кейсы:
+        #  1. отсутствуют джойны (тогда не нужен подзапрос)
+        #  2. в джойнах только прямые связи (тогда не нужен подзапрос)
+        #  3.
+        """
+        нет options, значит, ничего в select кроме основной модели нет
+            есть limit или offset:
+
+        """
+        stmt = select(self._model)
+        stmt = self._apply_joins(stmt, self._joins)
         stmt = self._apply_options(stmt)
         stmt = self._apply_where(stmt)
         stmt = self._apply_order(stmt)
         if self._limit or self._offset:
-            subquery = select(self._model.id)
+            subquery = select(func.distinct(self._model.id))
             subquery = self._apply_joins(subquery, self._joins)
             subquery = self._apply_where(subquery)
             # сортировка не нужна
