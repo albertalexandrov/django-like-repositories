@@ -71,10 +71,12 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
     queryset = (
         repository
         .objects
+        .filter(subsections__status__code="published")
     )
-    status_id = random.choice([1, 2])
-    print(status_id)
-    return await queryset.in_bulk(id_list=[1], field_name="status_id")
+    result = await queryset.delete(returning=['id', 'name'])
+    print(result)
+    print(type(result[0]))
+    return [(6, 'Личный кабинет подрядчика ТС5')]
 
 
 @app.get("/test-on-session")

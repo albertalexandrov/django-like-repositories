@@ -29,9 +29,9 @@ class Subsection(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str]
-    section_id: Mapped[int] = mapped_column(ForeignKey("sections.id"))
+    section_id: Mapped[int] = mapped_column(ForeignKey("sections.id", ondelete="CASCADE"))
     section: Mapped["Section"] = relationship(back_populates="subsections")
-    status_id: Mapped[int] = mapped_column(ForeignKey("publication_statuses.id"))
+    status_id: Mapped[int] = mapped_column(ForeignKey("publication_statuses.id", ondelete="CASCADE"))
     status: Mapped["PublicationStatus"] = relationship(back_populates="subsections")
     article_contents: Mapped[list["ArticleContent"]] = relationship(
         back_populates="subsection"
@@ -55,7 +55,7 @@ class ArticleContent(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     subtitle: Mapped[str]
     text: Mapped[str]
-    subsection_id: Mapped[int] = mapped_column(ForeignKey("subsections.id"))
+    subsection_id: Mapped[int] = mapped_column(ForeignKey("subsections.id", ondelete="CASCADE"))
     subsection: Mapped["Subsection"] = relationship(back_populates="article_contents")
     widget_id: Mapped[int] = mapped_column(ForeignKey("widgets.id"))
     widget: Mapped["Widget"] = relationship(back_populates="article_contents")

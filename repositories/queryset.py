@@ -1,8 +1,9 @@
+from collections.abc import Iterable
 from copy import deepcopy
 from typing import Self, TypeVar, Any
 
 from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect, Select, func
+from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager, selectinload
 from sqlalchemy.sql import operators
@@ -370,21 +371,29 @@ class QuerySet:
 
         return stmt
 
-    # todo: methods
-    #
-    # async def last(self):
-    #     pass
-    #
-    # async def latest(self):
-    #     pass
-    #
-    # async def earliest(self):
-    #     pass
-    #
     # async def update(self):
     #     pass
-    #
-    # async def delete(self):
-    #     pass
-    #
-    # ...
+
+    def get_delete_stmt(self, returning: str | list[str] = None):
+        stmt = select(func.distinct(self._model.id))
+        stmt = self._apply_joins(stmt, self._joins)
+        stmt = self._apply_where(stmt)
+        stmt = delete(self._model).where(self._model.id.in_(stmt))
+        if returning == 'all':
+            stmt = stmt.returning(self._model)
+        elif isinstance(returning, Iterable):
+            returning = [getattr(self._model, item) for item in returning]
+            stmt = stmt.returning(*returning)
+        return stmt
+
+    async def delete(self, returning: str | list[str] = None, scalar: bool = False) -> list[Any] | Any | CursorResult:
+        # todo: поработать над returning, scalar, mappings
+        stmt = self.get_delete_stmt(returning)
+        # if returning:
+        #     if isinstance(returning, Iterable):
+        #         result = await self._session.execute(stmt)
+        #     else:
+        #         result = await self._session.scalars(stmt)
+        #     return result.mappings().all()
+        # на случай, если понадобится сырой результат выполнения запроса
+        return await self._session.execute(stmt)
