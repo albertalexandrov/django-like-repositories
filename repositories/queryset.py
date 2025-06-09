@@ -331,6 +331,10 @@ class QuerySet:
     #  если запрашивать при помощи limit/offset, то нужно поле для сортировки, которое бы давало стабильный результат
     #  вроде еще можно при помощи серверных курсоров - нужно изучить
 
+    async def exists(self) -> bool:
+        obj = self._clone()
+        return await obj.count() > 0
+
     @property
     def query(self):
         # todo:
