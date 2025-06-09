@@ -3,7 +3,7 @@ from copy import deepcopy
 from typing import Self, TypeVar, Any
 
 from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult
+from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult, update, Result
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager, selectinload
 from sqlalchemy.sql import operators
@@ -71,6 +71,7 @@ class QuerySet:
         self._ordering_fields = set()
         self._limit = None
         self._offset = None
+        self._returning = None
 
     def _clone(self):
         # todo: проверить, что происходит с изменяемыми атрибутами при изменении этих атрибутов в копиях
@@ -84,6 +85,7 @@ class QuerySet:
         clone._ordering_fields = self._ordering_fields
         clone._limit = self._limit
         clone._offset = self._offset
+        clone._returning = self._returning
         return clone
 
     def filter(self, *, filtering: Filter = None, **filters) -> Self:
@@ -396,4 +398,31 @@ class QuerySet:
         #         result = await self._session.scalars(stmt)
         #     return result.mappings().all()
         # на случай, если понадобится сырой результат выполнения запроса
+        return await self._session.execute(stmt)
+
+    def get_update_stmt(self, values):
+        stmt = select(func.distinct(self._model.id))
+        stmt = self._apply_joins(stmt, self._joins)
+        stmt = self._apply_where(stmt)
+        stmt = (
+            update(self._model)
+            .where(self._model.id.in_(stmt))
+            .values(**values)
+        )
+        if self._returning:
+            stmt = stmt.returning(*self._returning)
+        return stmt
+
+    def returning(self, *cols, return_model: bool = False):
+        obj = self._clone()
+        if cols and return_model:
+            raise ValueError("Необходимо задать либо cols, либо return_model, но не одновременно")
+        if cols:
+            obj._returning = [getattr(self._model, item) for item in cols]
+        if return_model:
+            obj._returning = [self._model]
+        return obj
+
+    async def update(self, **values) -> Result[Model]:
+        stmt = self.get_update_stmt(values)
         return await self._session.execute(stmt)

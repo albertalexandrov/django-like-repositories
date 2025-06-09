@@ -71,11 +71,13 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
     queryset = (
         repository
         .objects
-        .filter(subsections__status__code="published")
+        .filter(subsections__status__code="unpublished")
+        .returning('id', 'name')
     )
-    result = await queryset.delete(returning=['id', 'name'])
-    print(result)
-    print(type(result[0]))
+    result = await queryset.update(name="ОБНОВЛЕНО")
+    rer = result.mappings().all()
+    print(rer)
+    return rer
     return [(6, 'Личный кабинет подрядчика ТС5')]
 
 
