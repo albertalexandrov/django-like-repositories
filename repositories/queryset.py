@@ -421,3 +421,6 @@ class QuerySet:
 
     async def scalars(self, flush: bool = False, commit: bool = False) -> ScalarResult:
         return await self._session.scalars(self.query)
+
+    async def execute(self, flush: bool = False, commit: bool = False) -> Result[Model]:
+        return await self._session.execute(self.query)

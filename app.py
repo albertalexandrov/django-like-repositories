@@ -72,10 +72,11 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
         repository
         .objects
         .filter(subsections__status__code="unpublished")
-        # .returning('id', 'name')
+        .returning('id', 'name')
     )
-    result = await queryset.scalars()
-    rer = result.all()
+    result = await queryset.execute()
+    rer = result.mappings().all()
+    print(rer)
     return rer
 
 
