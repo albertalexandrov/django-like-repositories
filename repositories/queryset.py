@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterable
 from copy import deepcopy
-from typing import Self, TypeVar, Any
+from typing import Self, TypeVar, Any, Type
 
 from fastapi_filter.contrib.sqlalchemy import Filter
 from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult, update, Result, ScalarResult, \
@@ -9,13 +9,16 @@ from sqlalchemy import select, extract, inspect, Select, func, delete, CursorRes
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager, selectinload, class_mapper, object_mapper
 from sqlalchemy.orm.exc import UnmappedClassError, UnmappedInstanceError
-from sqlalchemy.sql import operators
+from sqlalchemy.sql.operators import eq
+from sqlalchemy.orm.relationships import Relationship
+
+from exceptions import ObjectNotFoundError
 from models import PublicationStatus, Section, Subsection
 
 import django
 
-from exceptions import ObjectNotFoundError
 from repositories.constants import LOOKUP_SEP
+from repositories.exceptions import ColumnNotFoundError
 from repositories.lookups import lookups
 
 Model = TypeVar("Model")
@@ -39,6 +42,7 @@ class QuerySet:
         self._offset = None
         self._returning = None
         self._execution_options = None
+        self._filtering = None
 
     def _clone(self):
         # todo: проверить, что происходит с изменяемыми атрибутами при изменении этих атрибутов в копиях
@@ -62,69 +66,120 @@ class QuerySet:
             return False
         return True
 
+    def reset_filtering(self) -> Self:
+        # может и не нужно
+        obj = self._clone()
+        obj._filtering = None
+        return obj
+
     def filter(self, *, filtering: Filter = None, **kwargs) -> Self:
-        # todo: применить filtering
         """
-        status=Status()
-        status_id
-        :param filtering:
-        :param kwargs:
-        :return:
+        Обрабатывает условия фильтрации и попутно join-ы
+
+        Фильтрация по экземплярам модели как в Django, когда, получив экземпляр связной модели, например,
+        Status(...), Django преобразует его в status_id, видится невозможной или трудновыполнимой, тк в
+        SQLAlchemy FK и соответствующий relationship задаются независимо друг от друга
+
+        :param filtering: класс фильтров
+        :param kwargs: фильтры
         """
         obj = self._clone()
-        # ожидается, что в последней позиции названия фильтра filter_name находится lookup
+        if filtering:
+            obj._filtering = filtering
+        # предполагаем, что в последней позиции названия фильтра filter_name находится lookup
         lookup_expected_idx = -1
         for filter_name, filter_value in kwargs.items():
-            print("===> filter_value", filter_value)
-            if filter_name in self._where:
+            if filter_name in obj._where:
                 logger.warning(f"Фильтр {filter_name} уже был применен ранее")
-                continue
             model = obj._model
             joins = obj._joins
-            column = None
-            column_name = filter_name
+            column_name, op = filter_name, eq
             if LOOKUP_SEP in filter_name:
+                # здесь будет происходить определение модели и столбца (column_name),
+                # по которому нужно выполнить фильтрацию
                 attrs = filter_name.split(LOOKUP_SEP)
                 if attrs[lookup_expected_idx] == attrs[lookup_expected_idx - 1]:
-                    # обработка кейса, когда название lookup-а и столбца совпадают
+                    # название lookup-а и столбца могут совпадать.  например, для модели:
+                    #
+                    #   class Meet:
+                    #       title: Mapped[str]
+                    #       day: Mapped[date]
+                    #
+                    # может понадобиться выполнить фильтрацию по дню недели фильтром day__day
                     lookup = attrs.pop()
                 else:
                     lookup = attrs.pop() if attrs[lookup_expected_idx] in lookups else 'exact'
                 if not (op := lookups.get(lookup)):
-                    raise ValueError(f"lookup {lookup} не зарегистрирован")
-                for attr in attrs:
-                    if relationship := inspect(model).relationships.get(attr):
-                        joins = joins.setdefault(attr, {})
+                    raise ValueError(f"lookup {lookup} не найден")
+                column_name = None
+                for idx, column_or_relationship_name in enumerate(attrs):
+                    # необходимо пройти все column_or_relationship_name, чтобы проверить валидность фильтра
+                    # рассмотрим пример.  пусть есть модель:
+                    #
+                    #   class User(Base):
+                    #       first_name: Mapped[str]
+                    #       last_name: Mapped[str]
+                    #
+                    # и пусть пользователь задал фильтр first_name__last_name
+                    # тогда, если закончить на первом найденном столбце - first_name, то, во-первых,
+                    # пользователь не будет знать, что неверно сформировал фильтр, и, во-вторых, он
+                    # может получить неожидаемый результат, тк возможно он хотел отфильтровать по last_name
+                    if relationship := obj._get_relationship(model, column_or_relationship_name):
+                        joins = joins.setdefault(column_or_relationship_name, {})
+                        if idx == len(attrs) - 1:
+                            raise ColumnNotFoundError(model, column_or_relationship_name)
                         model = relationship.mapper.class_
                     else:
-                        if column is not None:
+                        obj._validate_has_column(model, column_or_relationship_name)
+                        if column_name is not None:
                             # пусть есть модель:
-                            # class User(Base):
-                            #   first_name: Mapped[str]
-                            #   last_name: Mapped[str]
-                            # и пусть пользователь задал фильтр first_name__last_name
-                            # тогда, если не выполнить проверку, будет выполнена фильтрация по полю last_name
+                            #
+                            #   class User(Base):
+                            #       first_name: Mapped[str]
+                            #       last_name: Mapped[str]
+                            #
+                            # и пусть пользователь задал фильтр first_name__last_name.  тогда, если не выполнить
+                            # проверку, будет выполнена фильтрация по последнему валидному полю - last_name
                             raise ValueError(
-                                f"В фильтре `{filter_name}` указано несколько полей одной "
-                                f"и той же модели, что не дает однозначно понять, по какому "
-                                f"именно столбцу необходимо выполнить фильтрацию"
+                                f"В фильтре `{filter_name}` указано несколько столбцов модели "
+                                f"{model.__name__} для фильтрации, что не дает однозначно понять, "
+                                "по какому именно столбцу необходимо выполнить фильтрацию"
                             )
-                        column = self._get_column_from_model(model, attr)
-                if column is None:
-                    raise ValueError(f"Фильтр `{filter_name}` должен заканчиваться названием столбца")
-            else:
-                op = operators.eq
-                column = self._get_column_from_model(model, filter_name)
+                        column_name = column_or_relationship_name
+            column = obj._get_column(model, column_name)
             obj._where[filter_name] = op(column, filter_value)
-        print("====>", self._joins)
-        print("====>", obj._where)
         return obj
 
-    def _get_column_from_model(self, model: Model, attr: str) -> Column:
-        column = inspect(model).columns.get(attr)
+    def _get_relationship(self, model_cls: Type[Model], relationship_name: str) -> Relationship | None:
+        """
+        Возвращает связь (relationship) по ее названию relationship_name
+
+        :param model_cls: класс модели SQLAlchemy
+        :param relationship_name: название связи
+        """
+        return inspect(model_cls).relationships.get(relationship_name)
+
+    def _validate_has_column(self, model_cls: Type[Model], column_name: str) -> None:
+        """
+        Валидирует, что модель model имеет столбец column_name
+
+        :param model_cls: класс модели SQLAlchemy
+        :param column_name: название столбца
+        """
+        if column_name not in inspect(model_cls).columns:
+            raise ColumnNotFoundError(model_cls, column_name)
+
+    def _get_column(self, model_cls: Type[Model], column_name: str) -> Column:
+        """
+        Возвращает столбец по его названию column_name
+
+        :param model_cls: класс модели SQLAlchemy
+        :param column_name: название столбца
+        """
+        column = inspect(model_cls).columns.get(column_name)
         if column is not None:
             return column
-        raise ValueError(f"Столбец `{attr}` не найден в модели {model.__name__}")
+        raise ColumnNotFoundError(model_cls, column_name)
 
     def options(self, *fields: str) -> Self:
         # todo: обработать отсутствие связи
@@ -202,7 +257,7 @@ class QuerySet:
         return await self._session.scalar(obj.query)
 
     def _apply_where(self, stmt: Select) -> Select:
-        return stmt.where(*self._where)
+        return stmt.where(*self._where.values())
 
     def _apply_order(self, stmt: Select) -> Select:
         return stmt.order_by(*list(self._ordering_fields))

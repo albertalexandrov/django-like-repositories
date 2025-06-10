@@ -1,7 +1,6 @@
-class ImproperlyConfiguredFilterError(Exception):
-    def __init__(self, filter_name: str):
+class ColumnNotFoundError(Exception):
+    def __init__(self, model, column_name: str):
         error = (
-            f"По фильтру `{filter_name}` не удалось определить, по какому столбцу необходимо выполнить фильтрацию. "
-            f"Убедитесь, что фильтр содержит одно поле для фильтрации"
+            f"Столбец `{column_name}` не найден в модели {model.__name__}"
         )
         super().__init__(error)
