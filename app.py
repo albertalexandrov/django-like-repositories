@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from dependencies import get_session
-from repositories.help import SectionRepository
+from repositories.help import SectionRepository, PublicationStatusRepository
 from repositories.users import UsersRepository
 from schemas import CreateUserSchema, UserSchema
-from models.help import Section
+from models.help import Section, PublicationStatus
 
 app = FastAPI()
 
@@ -67,17 +67,21 @@ async def get_created_by(repository: UsersRepository = Depends()):
 
 
 @app.get("/test")
-async def test(session: AsyncSession = Depends(get_session), repository: SectionRepository = Depends()):
+async def test(
+    session: AsyncSession = Depends(get_session),
+    repository: SectionRepository = Depends(),
+    status_repository: PublicationStatusRepository = Depends()
+):
+    status = await session.scalar(select(PublicationStatus))
     queryset = (
         repository
         .objects
-        .filter(subsections__status__code="unpublished")
+        .filter(status=status.id)
         # .returning('id', 'name')
     )
-    result = await queryset.all()
+    # result = await queryset.all()
     # rer = result.mappings().all()
-    print(result)
-    return result
+    return "result"
 
 
 @app.get("/test-on-session")

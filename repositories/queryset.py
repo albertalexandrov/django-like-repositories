@@ -1,19 +1,25 @@
+import logging
 from collections.abc import Iterable
 from copy import deepcopy
 from typing import Self, TypeVar, Any
 
 from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult, update, Result, ScalarResult
+from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult, update, Result, ScalarResult, \
+    Column
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, contains_eager, selectinload
+from sqlalchemy.orm import joinedload, contains_eager, selectinload, class_mapper, object_mapper
+from sqlalchemy.orm.exc import UnmappedClassError, UnmappedInstanceError
 from sqlalchemy.sql import operators
 from models import PublicationStatus, Section, Subsection
 
 import django
 
 from exceptions import ObjectNotFoundError
+from repositories.constants import LOOKUP_SEP
+from repositories.lookups import lookups
 
 Model = TypeVar("Model")
+logger = logging.getLogger("repositories")
 
 # todo:
 #  по идее подзапрос нужно строить только тогда, когда нужно подгрузить options
@@ -21,52 +27,12 @@ Model = TypeVar("Model")
 
 
 class QuerySet:
-    _operators = {
-        "in": operators.in_op,
-        "isnull": lambda c, v: (c == None) if v else (c != None),
-        "exact": operators.eq,
-        "eq": operators.eq,
-        "ne": operators.ne,
-        "gt": operators.gt,
-        "ge": operators.ge,
-        "lt": operators.lt,
-        "le": operators.le,
-        "notin": operators.notin_op,
-        "between": lambda c, v: c.between(v[0], v[1]),
-        "like": operators.like_op,
-        "ilike": operators.ilike_op,
-        "startswith": operators.startswith_op,
-        "istartswith": lambda c, v: c.ilike(v + "%"),
-        "endswith": operators.endswith_op,
-        "iendswith": lambda c, v: c.ilike("%" + v),
-        "contains": lambda c, v: c.like(f"%{v}%"),
-        "icontains": lambda c, v: c.ilike(f"%{v}%"),
-        "year": lambda c, v: extract("year", c) == v,
-        "year_ne": lambda c, v: extract("year", c) != v,
-        "year_gt": lambda c, v: extract("year", c) > v,
-        "year_ge": lambda c, v: extract("year", c) >= v,
-        "year_lt": lambda c, v: extract("year", c) < v,
-        "year_le": lambda c, v: extract("year", c) <= v,
-        "month": lambda c, v: extract("month", c) == v,
-        "month_ne": lambda c, v: extract("month", c) != v,
-        "month_gt": lambda c, v: extract("month", c) > v,
-        "month_ge": lambda c, v: extract("month", c) >= v,
-        "month_lt": lambda c, v: extract("month", c) < v,
-        "month_le": lambda c, v: extract("month", c) <= v,
-        "day": lambda c, v: extract("day", c) == v,
-        "day_ne": lambda c, v: extract("day", c) != v,
-        "day_gt": lambda c, v: extract("day", c) > v,
-        "day_ge": lambda c, v: extract("day", c) >= v,
-        "day_lt": lambda c, v: extract("day", c) < v,
-        "day_le": lambda c, v: extract("day", c) <= v,
-    }
-
     def __init__(self, model, session: AsyncSession):
         self._model = model
         self._session = session
         self._stmt = select(self._model)  # todo: перенести формирования запроса в отдельный класс
         self._options = {}
-        self._where = set()
+        self._where = {}
         self._joins = {}
         self._ordering_fields = set()
         self._limit = None
@@ -89,26 +55,76 @@ class QuerySet:
         clone._returning = self._returning
         return clone
 
-    def filter(self, *, filtering: Filter = None, **filters) -> Self:
+    def _is_sa_model(self, value):
+        try:
+            object_mapper(value)
+        except UnmappedInstanceError:
+            return False
+        return True
+
+    def filter(self, *, filtering: Filter = None, **kwargs) -> Self:
         # todo: применить filtering
+        """
+        status=Status()
+        status_id
+        :param filtering:
+        :param kwargs:
+        :return:
+        """
         obj = self._clone()
-        for field, value in filters.items():
+        # ожидается, что в последней позиции названия фильтра filter_name находится lookup
+        lookup_expected_idx = -1
+        for filter_name, filter_value in kwargs.items():
+            print("===> filter_value", filter_value)
+            if filter_name in self._where:
+                logger.warning(f"Фильтр {filter_name} уже был применен ранее")
+                continue
             model = obj._model
-            column, op = None, operators.eq
             joins = obj._joins
-            for attr in field.split("__"):
-                if mapped := getattr(model, attr, None):
-                    relationships = inspect(model).relationships
-                    if attr in relationships:
-                        relationship = relationships[attr].class_attribute
-                        joins = joins.setdefault(relationship, {})
-                        model = relationships[attr].mapper.class_
-                    column = mapped
+            column = None
+            column_name = filter_name
+            if LOOKUP_SEP in filter_name:
+                attrs = filter_name.split(LOOKUP_SEP)
+                if attrs[lookup_expected_idx] == attrs[lookup_expected_idx - 1]:
+                    # обработка кейса, когда название lookup-а и столбца совпадают
+                    lookup = attrs.pop()
                 else:
-                    op = obj._operators[attr]
-            obj._where.add(op(column, value))
-        print(obj._where)
+                    lookup = attrs.pop() if attrs[lookup_expected_idx] in lookups else 'exact'
+                if not (op := lookups.get(lookup)):
+                    raise ValueError(f"lookup {lookup} не зарегистрирован")
+                for attr in attrs:
+                    if relationship := inspect(model).relationships.get(attr):
+                        joins = joins.setdefault(attr, {})
+                        model = relationship.mapper.class_
+                    else:
+                        if column is not None:
+                            # пусть есть модель:
+                            # class User(Base):
+                            #   first_name: Mapped[str]
+                            #   last_name: Mapped[str]
+                            # и пусть пользователь задал фильтр first_name__last_name
+                            # тогда, если не выполнить проверку, будет выполнена фильтрация по полю last_name
+                            raise ValueError(
+                                f"В фильтре `{filter_name}` указано несколько полей одной "
+                                f"и той же модели, что не дает однозначно понять, по какому "
+                                f"именно столбцу необходимо выполнить фильтрацию"
+                            )
+                        column = self._get_column_from_model(model, attr)
+                if column is None:
+                    raise ValueError(f"Фильтр `{filter_name}` должен заканчиваться названием столбца")
+            else:
+                op = operators.eq
+                column = self._get_column_from_model(model, filter_name)
+            obj._where[filter_name] = op(column, filter_value)
+        print("====>", self._joins)
+        print("====>", obj._where)
         return obj
+
+    def _get_column_from_model(self, model: Model, attr: str) -> Column:
+        column = inspect(model).columns.get(attr)
+        if column is not None:
+            return column
+        raise ValueError(f"Столбец `{attr}` не найден в модели {model.__name__}")
 
     def options(self, *fields: str) -> Self:
         # todo: обработать отсутствие связи
