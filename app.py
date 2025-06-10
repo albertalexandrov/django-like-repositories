@@ -74,7 +74,7 @@ async def test(session: AsyncSession = Depends(get_session), repository: Section
         .filter(subsections__status__code="unpublished")
         .returning('id', 'name')
     )
-    result = await queryset.delete()
+    result = await queryset.update(name="SDHCBSJDH")
     rer = result.mappings().all()
     return rer
 

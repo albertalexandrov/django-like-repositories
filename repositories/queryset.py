@@ -72,6 +72,7 @@ class QuerySet:
         self._limit = None
         self._offset = None
         self._returning = None
+        self._execution_options = None
 
     def _clone(self):
         # todo: проверить, что происходит с изменяемыми атрибутами при изменении этих атрибутов в копиях
@@ -373,9 +374,6 @@ class QuerySet:
 
         return stmt
 
-    # async def update(self):
-    #     pass
-
     def get_delete_stmt(self):
         stmt = select(func.distinct(self._model.id))
         stmt = self._apply_joins(stmt, self._joins)
@@ -386,7 +384,6 @@ class QuerySet:
         return stmt
 
     async def delete(self) -> Result[Model]:
-        # todo: поработать над returning, scalar, mappings
         stmt = self.get_delete_stmt()
         return await self._session.execute(stmt)
 
@@ -403,7 +400,12 @@ class QuerySet:
             stmt = stmt.returning(*self._returning)
         return stmt
 
-    def returning(self, *cols, return_model: bool = False):
+    def execution_options(self, **execution_options) -> Self:
+        obj = self._clone()
+        obj._execution_options = execution_options
+        return obj
+
+    def returning(self, *cols, return_model: bool = False) -> Self:
         obj = self._clone()
         if cols and return_model:
             raise ValueError("Необходимо задать либо cols, либо return_model, но не одновременно")
