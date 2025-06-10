@@ -3,7 +3,7 @@ from copy import deepcopy
 from typing import Self, TypeVar, Any
 
 from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult, update, Result
+from sqlalchemy import select, extract, inspect, Select, func, delete, CursorResult, update, Result, ScalarResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, contains_eager, selectinload
 from sqlalchemy.sql import operators
@@ -418,3 +418,6 @@ class QuerySet:
     async def update(self, **values) -> Result[Model]:
         stmt = self.get_update_stmt(values)
         return await self._session.execute(stmt)
+
+    async def scalars(self, flush: bool = False, commit: bool = False) -> ScalarResult:
+        return await self._session.scalars(self.query)
