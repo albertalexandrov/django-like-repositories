@@ -107,6 +107,7 @@ class QuerySet:
                 else:
                     op = obj._operators[attr]
             obj._where.add(op(column, value))
+        print(obj._where)
         return obj
 
     def options(self, *fields: str) -> Self:
@@ -177,7 +178,7 @@ class QuerySet:
 
     async def all(self):
         result = await self._session.scalars(self.query)
-        return result.unique().all()
+        return result.all()
 
     async def first(self):
         obj = self._clone()
@@ -252,7 +253,6 @@ class QuerySet:
         # todo: может два сразу запрашивать?
         obj = self._clone()
         count = await self.count()
-        print("==> count", count)
         if count == 0:
             raise exc
         elif count > 1:
@@ -424,3 +424,6 @@ class QuerySet:
 
     async def execute(self, flush: bool = False, commit: bool = False) -> Result[Model]:
         return await self._session.execute(self.query)
+
+    # def values_list(self, *fields, flat=False, named=False):
+    #     pass
