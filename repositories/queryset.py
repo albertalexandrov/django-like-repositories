@@ -125,6 +125,7 @@ class QuerySet:
                     # пользователь не будет знать, что неверно сформировал фильтр, и, во-вторых, он
                     # может получить неожидаемый результат, тк возможно он хотел отфильтровать по last_name
                     if relationship := obj._get_relationship(model, column_or_relationship_name):
+                        joins = joins.setdefault("children", {})
                         joins = joins.setdefault(column_or_relationship_name, {})
                         if idx == len(attrs) - 1:
                             raise ColumnNotFoundError(model, column_or_relationship_name)
@@ -148,6 +149,7 @@ class QuerySet:
                         column_name = column_or_relationship_name
             column = obj._get_column(model, column_name)
             obj._where[filter_name] = op(column, filter_value)
+        print(self._joins)
         return obj
 
     def _get_relationship(self, model_cls: Type[Model], relationship_name: str) -> Relationship | None:
@@ -262,12 +264,12 @@ class QuerySet:
     def _apply_order(self, stmt: Select) -> Select:
         return stmt.order_by(*list(self._ordering_fields))
 
-    def _apply_joins(self, stmt: Select, joins: dict) -> Select:
-        joins = deepcopy(joins)
-        for join, value in joins.items():
-            isouter = value.pop("isouter", False)
-            stmt = stmt.join(join, isouter=isouter)
-            stmt = self._apply_joins(stmt, value)
+    def _apply_joins(self, stmt: Select, model: Type[Model], joins: dict) -> Select:
+        for join, value in joins.get("children", {}).items():
+            isouter = value.get("isouter", False)
+            relationship = self._get_relationship(model, join).class_attribute
+            stmt = stmt.join(relationship, isouter=isouter)
+            stmt = self._apply_joins(stmt, relationship.mapper.class_, value)
         return stmt
 
     def outerjoin(self, *joins) -> Self:
@@ -285,9 +287,10 @@ class QuerySet:
             for attr in join.split("__"):
                 relationships = inspect(model).relationships
                 relationship = relationships[attr]
+                last = attr
+                nn_joins = nn_joins.setdefault("children", {})
                 prev = nn_joins
-                kl_attr = last = relationship.class_attribute
-                nn_joins = nn_joins.setdefault(kl_attr, {})
+                nn_joins = nn_joins.setdefault(attr, {})
                 model = relationship.mapper.class_
             prev[last]["isouter"] = isouter
         return obj
@@ -428,7 +431,7 @@ class QuerySet:
 
         """
         stmt = select(self._model)
-        stmt = self._apply_joins(stmt, self._joins)
+        stmt = self._apply_joins(stmt, self._model, self._joins)
         stmt = self._apply_options(stmt)
         stmt = self._apply_where(stmt)
         stmt = self._apply_order(stmt)

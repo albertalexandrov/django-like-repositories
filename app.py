@@ -80,7 +80,8 @@ async def test(
     queryset = (
         repository
         .objects
-        .filter(subsections__section_id=status.id)
+        .outerjoin('subsections')
+        .filter(subsections__status__code='status.id')
         # .returning('id', 'name')
     )
     # result = await queryset.all()
