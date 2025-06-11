@@ -152,14 +152,17 @@ class QuerySet:
         print(self._joins)
         return obj
 
-    def _get_relationship(self, model_cls: Type[Model], relationship_name: str) -> Relationship | None:
+    def _get_relationship(self, model_cls: Type[Model], relationship_name: str, raise_: bool = False) -> Relationship | None:
         """
         Возвращает связь (relationship) по ее названию relationship_name
 
         :param model_cls: класс модели SQLAlchemy
         :param relationship_name: название связи
         """
-        return inspect(model_cls).relationships.get(relationship_name)
+        relationship = inspect(model_cls).relationships.get(relationship_name)
+        if not relationship and raise_:
+            raise ValueError(f"В модели {model_cls.__name__} отсутствует связь `{relationship_name}`")
+        return relationship
 
     def _validate_has_column(self, model_cls: Type[Model], column_name: str) -> None:
         """
@@ -272,27 +275,26 @@ class QuerySet:
             stmt = self._apply_joins(stmt, relationship.mapper.class_, value)
         return stmt
 
-    def outerjoin(self, *joins) -> Self:
-        return self._join(joins, isouter=True)
+    def outerjoin(self, *args: str) -> Self:
+        return self._join(args, isouter=True)
 
-    def innerjoin(self, *joins) -> Self:
-        return self._join(joins, isouter=False)
+    def innerjoin(self, *args: str) -> Self:
+        return self._join(args, isouter=False)
 
     def _join(self, joins, isouter) -> Self:
         obj = self._clone()
         for join in joins:
             model = obj._model
-            nn_joins = obj._joins
-            prev, last = None, None
+            joins_tree = obj._joins
+            prev, last_join_attr = None, None
             for attr in join.split("__"):
-                relationships = inspect(model).relationships
-                relationship = relationships[attr]
-                last = attr
-                nn_joins = nn_joins.setdefault("children", {})
-                prev = nn_joins
-                nn_joins = nn_joins.setdefault(attr, {})
+                relationship = self._get_relationship(model, attr, True)
+                last_join_attr = attr
+                joins_tree = joins_tree.setdefault("children", {})
+                prev = joins_tree
+                joins_tree = joins_tree.setdefault(attr, {})
                 model = relationship.mapper.class_
-            prev[last]["isouter"] = isouter
+            prev[last_join_attr]["isouter"] = isouter
         return obj
 
     def limit(self, limit: int) -> Self:
