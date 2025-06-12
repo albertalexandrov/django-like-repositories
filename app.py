@@ -1,16 +1,12 @@
-import random
-
 from fastapi import FastAPI, Depends
-from fastapi_filter import FilterDepends
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
-from filters import SectionFilters
-from repositories.help import SectionRepository, PublicationStatusRepository
+from models.help import Section
+from repositories.help import SectionRepository
 from repositories.users import UsersRepository
 from schemas import CreateUserSchema, UserSchema
-from models.help import Section, PublicationStatus
 
 app = FastAPI()
 
@@ -70,23 +66,23 @@ async def get_created_by(repository: UsersRepository = Depends()):
 
 @app.get("/test")
 async def test(
-    filters: SectionFilters = FilterDepends(SectionFilters),
     session: AsyncSession = Depends(get_session),
     repository: SectionRepository = Depends(),
-    status_repository: PublicationStatusRepository = Depends()
 ):
-    print(filters)
-    status = await session.scalar(select(PublicationStatus))
     queryset = (
         repository
         .objects
-        .outerjoin('subsection')
-        .filter(subsections__status__code='status.id')
+        # .filter(subsections__status__code='published')
+        # .order_by('status_id', 'status_id')
+        # .outerjoin("subsections")
         # .returning('id', 'name')
+        # .options("subsections__status")
+        # .execution_options(populate_existing=True)
     )
     # result = await queryset.all()
     # rer = result.mappings().all()
-    return await queryset.all()
+    d = await queryset.values_list('id', 'name').order_by('-id').all()
+    return d
 
 
 @app.get("/test-on-session")
