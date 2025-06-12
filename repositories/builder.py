@@ -23,7 +23,7 @@ class QueryBuilder:
         self._order_by = {}
         self._limit = None
         self._offset = None
-        self._returning = None  # коллекция
+        self._returning = []
         self._execution_options = None
         self._values_list = []
 
@@ -113,16 +113,19 @@ class QueryBuilder:
     def returning(self, *cols, return_model: bool = False) -> None:
         """
         Сохраняет информацию о том, что нужно вернуть в ходе выполнения запроса
+
         :param cols:
         :param return_model:
-        :return:
         """
         if cols and return_model:
             raise ValueError("Запрещено одновременно задать cols и return_model")
+        self._returning.clear()
         if cols:
-            self._returning = [get_column(self._model_cls, item) for item in cols]
+            for col in cols:
+                column = get_column(self._model_cls, col)
+                self._returning.append(column)
         if return_model:
-            self._returning = [self._model_cls]
+            self._returning.append(self._model_cls)
 
     def execution_options(self, **kwargs: dict[str:Any]) -> None:
         self._execution_options = kwargs
