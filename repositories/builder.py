@@ -104,7 +104,7 @@ class QueryBuilder:
             model = self._model_cls
             options = self._options
             joins = self._joins
-            for attr in option_path.split("__"):
+            for attr in option_path.split(LOOKUP_SEP):
                 relationship = self._get_relationship(model, attr, raise_=True)
                 options = options.setdefault(attr, {})
                 joins = joins.setdefault("children", {}).setdefault(attr, {})
@@ -198,7 +198,7 @@ class QueryBuilder:
             model = self._model_cls
             joins_tree = self._joins
             prev, last_join_attr = None, None
-            for attr in join.split("__"):
+            for attr in join.split(LOOKUP_SEP):
                 relationship = self._get_relationship(model, attr, True)
                 last_join_attr = attr
                 joins_tree = joins_tree.setdefault("children", {})
