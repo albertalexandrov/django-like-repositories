@@ -1,8 +1,8 @@
 import logging
 from copy import deepcopy
-from typing import Self, TypeVar, Any
+from typing import Self, TypeVar, Any, Generator
 
-from sqlalchemy import Result
+from sqlalchemy import Result, RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repositories.builder import QueryBuilder
@@ -14,27 +14,21 @@ Model = TypeVar("Model")
 logger = logging.getLogger("repositories")
 
 
-class BaseIterable:
-
-    def __init__(self, result: Result):
-        self._result = result
+def iterate_scalars(result: Result) -> list[Model]:
+    return list(result.scalars().all())
 
 
-def iterate_scalars(result: Result):
-    return result.scalars().all()
+def iterate_flat_values_list(result: Result) -> list[Any]:
+    return list(result.scalars().all())
 
 
-def iterate_flat_values_list(result: Result):
-    print(result.all())
-    return
-
-
-def iterate_values_list(result: Result):
-    raise
+def iterate_values_list(result: Result) -> list[RowMapping]:
+    # t = result.tuples().all()
+    return list(item._data for item in result.tuples().all())
 
 
 def iterate_named_values_list(result: Result):
-    raise
+    return list(result.tuples().all())
 
 
 class QuerySet:
@@ -42,14 +36,14 @@ class QuerySet:
         self._model_cls = model
         self._session = session
         self._query_builder = QueryBuilder(self._model_cls)
-        self._iterate_result = iterate_scalars
+        self._iterable_result_func = iterate_scalars
 
-    def _clone(self):
+    def _clone(self) -> Self:
         # todo: проверить, что происходит с изменяемыми атрибутами при изменении этих атрибутов в копиях
         clone = self.__class__(self._model_cls, self._session)
         clone._model_cls = self._model_cls
         clone._session = self._session
-        # копировать сессию и модель не нужно
+        # делать копии сессии и модели не нужно
         clone._query_builder = deepcopy(self._query_builder)
         return clone
 
@@ -77,13 +71,10 @@ class QuerySet:
         clone._query_builder.order_by(*args)
         return clone
 
-    async def all(self) -> list[Any]:
+    async def all(self) -> list:
         stmt = self._query_builder.build_select_stmt()
         result = await self._session.execute(stmt)
-        return self._iterate_result(result.unique())
-        # если не вызвать метод unique(), то SQLAlchemy выдаст ошибку:
-        #   sqlalchemy.exc.InvalidRequestError: The unique() method must be invoked on this Result,
-        #   as it contains results that include joined eager loads against collections
+        return self._iterable_result_func(result)
 
     async def first(self) -> Model | None:
         clone = self._clone()
@@ -191,6 +182,14 @@ class QuerySet:
         return clone
 
     def returning(self, *cols, return_model: bool = False) -> Self:
+        """
+        Добавляет RETURNING к запросу
+
+        Учитывается при запросах UPDATE и DELETE
+
+        :param cols: названия столбцов
+        :param return_model: инструкция вернуть все столбцы модели
+        """
         clone = self._clone()
         clone._query_builder.returning(*cols, return_model=return_model)
         return clone
@@ -199,10 +198,14 @@ class QuerySet:
         stmt = self._query_builder.build_update_stmt(values)
         return await self._session.execute(stmt)
 
-    def values_list(self, *args, flat=False, named=False):
+    def values_list(self, *args, flat: bool = False, named: bool = False) -> Self:
+        if flat and named:
+            raise TypeError("'flat' и 'named' не могут быть использованы вместе")
+        if flat and len(args) > 1:
+            raise TypeError("'flat' не валиден, когда метод values_list() вызывается с более чем одним полем")
         clone = self._clone()
         clone._query_builder.values_list(*args)
-        clone._iterate_result = (
+        clone._iterable_result_func = (
             iterate_named_values_list
             if named
             else iterate_flat_values_list if flat else iterate_values_list

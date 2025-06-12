@@ -23,7 +23,7 @@ class QueryBuilder:
         self._order_by = {}
         self._limit = None
         self._offset = None
-        self._returning = None
+        self._returning = None  # коллекция
         self._execution_options = None
         self._values_list = []
 
@@ -128,6 +128,7 @@ class QueryBuilder:
         self._execution_options = kwargs
 
     def values_list(self, *args: str) -> None:
+        validate_has_columns(self._model_cls, *args)
         self._values_list.clear()
         for field in args:
             self._values_list.append(get_column(self._model_cls, field))

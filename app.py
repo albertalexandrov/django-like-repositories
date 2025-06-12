@@ -81,8 +81,11 @@ async def test(
     )
     # result = await queryset.all()
     # rer = result.mappings().all()
-    d = await queryset.values_list('id', 'name').order_by('-id').all()
-    return d
+    r = await queryset.values_list('id', 'name', flat=True).all()
+
+    print(r)
+
+    return "d"
 
 
 @app.get("/test-on-session")
