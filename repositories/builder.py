@@ -110,18 +110,18 @@ class QueryBuilder:
                 joins = joins.setdefault("children", {}).setdefault(attr, {})
                 model = relationship.mapper.class_
 
-    def returning(self, *cols, return_model: bool = False) -> None:
+    def returning(self, *args, return_model: bool = False) -> None:
         """
         Сохраняет информацию о том, что нужно вернуть в ходе выполнения запроса
 
-        :param cols:
+        :param args:
         :param return_model:
         """
-        if cols and return_model:
+        if args and return_model:
             raise ValueError("Запрещено одновременно задать cols и return_model")
         self._returning.clear()
-        if cols:
-            for col in cols:
+        if args:
+            for col in args:
                 column = get_column(self._model_cls, col)
                 self._returning.append(column)
         if return_model:

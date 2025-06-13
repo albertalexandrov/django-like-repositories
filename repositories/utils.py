@@ -3,15 +3,15 @@ from sqlalchemy import inspect, Column
 from repositories.exceptions import ColumnNotFoundError
 
 
-def validate_has_columns(model_cls, *cols: str) -> None:
+def validate_has_columns(model_cls, *args: str) -> None:
     """
     Валидирует, что модель model имеет столбец column_name
 
     :param model_cls: класс модели SQLAlchemy
-    :param cols: название столбцов
+    :param args: название столбцов
     """
     columns = inspect(model_cls).columns
-    for col in cols:
+    for col in args:
         if col not in columns:
             raise ColumnNotFoundError(model_cls, col)
 
