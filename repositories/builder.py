@@ -1,8 +1,8 @@
 import logging
 from typing import Any, Literal
 
-from sqlalchemy import inspect, Column, Select, select, func, Executable, delete, Delete, update, Update
-from sqlalchemy.orm import Relationship, contains_eager, joinedload, aliased
+from sqlalchemy import inspect, Column, Select, select, func, delete, Delete, update, Update
+from sqlalchemy.orm import Relationship, contains_eager, joinedload
 from sqlalchemy.sql.operators import eq
 
 from repositories.constants import LOOKUP_SEP
@@ -12,9 +12,12 @@ from repositories.utils import validate_has_columns, get_column
 
 logger = logging.getLogger(__name__)
 
-counter = 0
 
 class QueryBuilder:
+    """
+    Хранитель информации о параметрах SQL-запроса
+    """
+
     def __init__(self, model_cls):
         self._model_cls = model_cls
         self._where = {}
@@ -27,15 +30,15 @@ class QueryBuilder:
         self._execution_options = None
         self._values_list = []
 
-    def filter(self, **kwargs: dict[str:Any]) -> None:
+    def filter(self, **kw: dict[str:Any]) -> None:
         """
         Обрабатывает условия фильтрации и сопутствующие join-ы
 
-        :param kwargs: условия фильтрации
+        :param kw: условия фильтрации
         """
         # предполагаем, что в последней позиции названия фильтра filter_name находится lookup
         lookup_expected_idx = -1
-        for filter_name, filter_value in kwargs.items():
+        for filter_name, filter_value in kw.items():
             if filter_name in self._where:
                 logger.warning(f"Фильтр {filter_name} уже был применен ранее")
             if LOOKUP_SEP in filter_name:
@@ -114,11 +117,13 @@ class QueryBuilder:
         """
         Сохраняет информацию о том, что нужно вернуть в ходе выполнения запроса
 
-        :param args:
-        :param return_model:
+        Учитывается при запросах UPDATE и DELETE
+
+        :param args: названия столбцов
+        :param return_model: признак необходимости вернуть всех столбцы модели
         """
         if args and return_model:
-            raise ValueError("Запрещено одновременно задать cols и return_model")
+            raise ValueError("`args` и `return_model` не могут быть заданы одновременно")
         self._returning.clear()
         if args:
             for col in args:
@@ -128,9 +133,17 @@ class QueryBuilder:
             self._returning.append(self._model_cls)
 
     def execution_options(self, **kwargs: dict[str:Any]) -> None:
+        """
+        Сохраняет параметры выполнения запроса
+        """
         self._execution_options = kwargs
 
     def values_list(self, *args: str) -> None:
+        """
+        Добавляет столбцы для выборки в итоговый запрос
+
+        :param args: названия столбцов
+        """
         validate_has_columns(self._model_cls, *args)
         self._values_list.clear()
         for field in args:
@@ -149,11 +162,28 @@ class QueryBuilder:
         return stmt
 
     def build_select_stmt(self) -> Select:
+        """
+        Возвращает запрос на выборку данных
+        """
         stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
         stmt = self._apply_execution_options(stmt)
         stmt = self._apply_joins(stmt)
         stmt = self._apply_where(stmt)
         if self._options:
+            # поскольку все связные модели join-ятся, то нельзя просто так применить limit и offset
+            # особенно если связи обратные.  рассмотрим пример:
+            #
+            #   class Section(Base):
+            #       id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+            #       subsections: Mapped[list["Subsection"]] = relationship(back_populates="section")
+            #
+            #
+            #   class Subsection(Base):
+            #       id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+            #       section: Mapped["Section"] = relationship(back_populates="subsections")
+            #
+            # предположим, что у одного Section есть три связных Subsection.  тогда, если задать limit равным 1,
+            # то в итоге получим Section, у которого в Section.subsections будет один Subsection
             subquery = select(func.distinct(*self._get_model_pk()))
             subquery = self._apply_joins(subquery)
             subquery = self._apply_where(subquery)
@@ -161,7 +191,8 @@ class QueryBuilder:
             subquery = self._apply_limit(subquery)
             subquery = self._apply_offset(subquery)
             stmt = stmt.where(self._model_cls.id.in_(subquery))
-            stmt = self._apply_options(stmt)  # должно быть именно тут
+            if not self._values_list:
+                stmt = self._apply_options(stmt)  # должно быть именно тут
         else:
             stmt = self._apply_order_by(stmt)
             stmt = self._apply_limit(stmt)
@@ -181,6 +212,11 @@ class QueryBuilder:
         return stmt
 
     def build_update_stmt(self, values: dict[str:Any]) -> Update:
+        """
+        Возвращает запрос на обновление
+
+        :param values: значения для обновления
+        """
         stmt = select(func.distinct(self._model_cls.id))
         stmt = self._apply_joins(stmt, self._joins)
         stmt = self._apply_where(stmt)
@@ -193,8 +229,14 @@ class QueryBuilder:
             stmt = stmt.returning(*self._returning)
         return stmt
 
-    def join(self, *joins: str, isouter: bool) -> None:
-        for join in joins:
+    def join(self, *args: str, isouter: bool) -> None:
+        """
+        Сохраняет join-ы
+
+        :param args: перечисленные через запятую join-ы
+        :param isouter: признак внешнего join-а
+        """
+        for join in args:
             model = self._model_cls
             joins_tree = self._joins
             prev, last_join_attr = None, None
@@ -207,7 +249,12 @@ class QueryBuilder:
                 model = relationship.mapper.class_
             prev[last_join_attr]["isouter"] = isouter
 
-    def _apply_execution_options(self, stmt):
+    def _apply_execution_options(self, stmt: Select) -> Select:
+        """
+        Применяет к запросу stmt параметры
+
+        :param stmt: запрос
+        """
         execution_options = self._execution_options or {}
         stmt = stmt.execution_options(**execution_options)
         return stmt
@@ -254,6 +301,7 @@ class QueryBuilder:
     def _extract_column(self, attrs: list[str], field_name: str, op: Literal['order_by', 'filter']) -> Column:
         """
         Извлекает из строки вида column1__relationship__column2 столбец SQLAlchemy
+
         :param attrs:
         :param field_name:
         :param op:

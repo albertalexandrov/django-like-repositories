@@ -30,7 +30,7 @@ def iterate_named_values_list(result: Result):
 
 
 class QuerySet:
-    def __init__(self, model, session: AsyncSession):
+    def __init__(self, model: Model, session: AsyncSession):
         self._model_cls = model
         self._session = session
         self._query_builder = QueryBuilder(self._model_cls)
@@ -104,7 +104,7 @@ class QuerySet:
 
         Промежуточный метод - возвращает новый QuerySet
 
-        Внешним join-ом становится только последний join.  Например, при указании
+        Внешним join-ом станет только последний join.  Например, при указании
         subsection__article_content, внешним join-ом будет сохранен только article_content
 
         Необходимость метода обусловлена тем, что по умолчанию связные модели join-ятся при помощи
@@ -122,6 +122,9 @@ class QuerySet:
         Добавляет INNER JOIN к итоговому запросу
 
         Промежуточный метод - возвращает новый QuerySet
+
+        Внутренным join-ом станет только последний join.  Например, при указании
+        subsection__article_content, внутренным join-ом будет сохранен только article_content
 
         Необходимость метода обусловлена необходимостью изменить тип join-а в случаях, когда определяется
         option.  Допустим, необходимо подгрузить экземпляры связной модели.  Это будет сделано при помощи
@@ -141,6 +144,8 @@ class QuerySet:
 
         См https://docs.sqlalchemy.org/en/20/core/selectable.html#sqlalchemy.sql.expression.Select.execution_options
 
+        Повторный вызов метода перезапишет ранее сохраненные значения
+
         :param kw: параметры запроса
         """
         clone = self._clone()
@@ -152,6 +157,8 @@ class QuerySet:
         Добавляет returning к итоговому запросу
 
         Промежуточный метод - возвращает новый QuerySet
+
+        Повторный вызов метода перезапишет ранее сохраненные значения
 
         Учитывается при запросах UPDATE и DELETE
 
@@ -177,7 +184,7 @@ class QuerySet:
         :param named: признак необходимости вернуть список именованных кортежей
         """
         if flat and named:
-            raise TypeError("'flat' и 'named' не могут быть использованы вместе")
+            raise TypeError("'flat' и 'named' не могут быть заданы одновременно")
         if flat and len(args) > 1:
             raise TypeError("'flat' не валиден, когда метод values_list() вызывается с более чем одним полем")
         clone = self._clone()
