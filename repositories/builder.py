@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, Type
 
 from sqlalchemy import inspect, Column, Select, select, func, delete, Delete, update, Update
 from sqlalchemy.orm import Relationship, contains_eager, joinedload
@@ -8,6 +8,7 @@ from sqlalchemy.sql.operators import eq
 from repositories.constants import LOOKUP_SEP
 from repositories.exceptions import ColumnNotFoundError, RelationshipNotFoundError
 from repositories.lookups import lookups
+from repositories.types import Model
 from repositories.utils import validate_has_columns, get_column
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class QueryBuilder:
     Хранитель информации о параметрах SQL-запроса
     """
 
-    def __init__(self, model_cls):
+    def __init__(self, model_cls: Type[Model]):
         self._model_cls = model_cls
         self._where = {}
         self._joins = {}
@@ -113,7 +114,7 @@ class QueryBuilder:
                 joins = joins.setdefault("children", {}).setdefault(attr, {})
                 model = relationship.mapper.class_
 
-    def returning(self, *args, return_model: bool = False) -> None:
+    def returning(self, *args: str, return_model: bool = False) -> None:
         """
         Сохраняет информацию о том, что нужно вернуть в ходе выполнения запроса
 

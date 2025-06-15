@@ -81,11 +81,9 @@ async def test(
     )
     # result = await queryset.all()
     # rer = result.mappings().all()
-    r = await queryset.values_list('id', 'name', flat=True).all()
-
+    r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
     print(r)
-
-    return "d"
+    return r
 
 
 @app.get("/test-on-session")

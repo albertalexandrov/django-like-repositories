@@ -3,7 +3,7 @@ from repositories.base import BaseRepository
 
 
 class SectionRepository(BaseRepository):
-    model = Section
+    model_cls = Section
 
     @property
     def published(self):
@@ -11,7 +11,7 @@ class SectionRepository(BaseRepository):
 
 
 class PublicationStatusRepository(BaseRepository):
-    model = PublicationStatus
+    model_cls = PublicationStatus
 
     async def get_PUBLISHED_status(self) -> PublicationStatus:  # noqa
         return await self.objects.filter(code='published').get_one_or_raise()

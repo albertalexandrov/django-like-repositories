@@ -104,7 +104,7 @@ from repositories.base import BaseRepository
 
 
 class SectionRepository(BaseRepository):
-    model = Section
+    model_cls = Section
 ```
 
 ## Базовый репозиторий

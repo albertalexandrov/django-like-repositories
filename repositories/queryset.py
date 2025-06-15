@@ -1,15 +1,15 @@
 import logging
 from copy import deepcopy
-from typing import Self, TypeVar, Any
+from typing import Self, Any, Type
 
-from sqlalchemy import Result, RowMapping
+from sqlalchemy import Result, Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repositories.builder import QueryBuilder
 from repositories.constants import LOOKUP_SEP
-from repositories.utils import validate_has_columns, get_column
+from repositories.types import Model
+from repositories.utils import validate_has_columns, get_column, flush_or_commit
 
-Model = TypeVar("Model")
 logger = logging.getLogger("repositories")
 
 
@@ -21,16 +21,16 @@ def iterate_flat_values_list(result: Result) -> list[Any]:
     return list(result.scalars().all())
 
 
-def iterate_values_list(result: Result) -> list[RowMapping]:
-    return list(item._data for item in result.tuples().all())
+def iterate_values_list(result: Result) -> list[tuple]:
+    return list(tuple(item) for item in result.tuples().all())
 
 
-def iterate_named_values_list(result: Result):
+def iterate_named_values_list(result: Result) -> list[Row]:
     return list(result.tuples().all())
 
 
 class QuerySet:
-    def __init__(self, model: Model, session: AsyncSession):
+    def __init__(self, model: Type[Model], session: AsyncSession):
         self._model_cls = model
         self._session = session
         self._query_builder = QueryBuilder(self._model_cls)
@@ -48,7 +48,7 @@ class QuerySet:
         clone._query_builder = deepcopy(self._query_builder)
         return clone
 
-    def filter(self, **kw) -> Self:
+    def filter(self, **kw: dict[str:Any]) -> Self:
         """
         Сохраняет условия фильтрации
 
@@ -136,7 +136,7 @@ class QuerySet:
         self._query_builder.join(*args, isouter=False)
         return clone
 
-    def execution_options(self, **kw) -> Self:
+    def execution_options(self, **kw: dict[str:Any]) -> Self:
         """
         Добавляет execution_options в итоговый запрос
 
@@ -152,7 +152,7 @@ class QuerySet:
         clone._query_builder.execution_options(**kw)
         return clone
 
-    def returning(self, *args, return_model: bool = False) -> Self:
+    def returning(self, *args: str, return_model: bool = False) -> Self:
         """
         Добавляет returning к итоговому запросу
 
@@ -169,7 +169,7 @@ class QuerySet:
         clone._query_builder.returning(*args, return_model=return_model)
         return clone
 
-    def values_list(self, *args, flat: bool = False, named: bool = False) -> Self:
+    def values_list(self, *args: str, flat: bool = False, named: bool = False) -> Self:
         """
         Добавляет столбцы для выборки в итоговый запрос
 
@@ -256,7 +256,7 @@ class QuerySet:
         модели, а created — булевая переменная, указывающая на создание объекта (True) или его
         извлечение из базы данных (False)
 
-        Если поле в kwargs совпадает названием с defaults, flush bли commit, то этому полю необходимо добавить
+        Если поле в kwargs совпадает названием с defaults, flush или commit, то этому полю необходимо добавить
         lookup exact, то есть defaults__exact и тд, и при необходимости добавить его в defaults, чтобы его
         значение было сохранено при создании нового экземпляра
 
@@ -270,7 +270,7 @@ class QuerySet:
         params = self._extract_model_params(defaults, **kwargs)
         obj = self._model_cls(**params)
         self._session.add(obj)
-        await self._flush_or_commit(obj, flush=flush, commit=commit)
+        await flush_or_commit(obj, session=self._session, flush=flush, commit=commit)
         return obj, True
 
     async def update_or_create(
@@ -280,6 +280,10 @@ class QuerySet:
         Обновляет новую запись или обновляет существующую
 
         Терминальный метод - выполняет запросы
+
+        Если поле в kwargs совпадает названием с defaults, create_defaults, flush или commit, то этому полю
+        необходимо добавить lookup exact, то есть defaults__exact и тд, и при необходимости добавить его в defaults,
+        чтобы его значение было сохранено при создании нового экземпляра
 
         :param defaults: значения для обновления существуюещей записи
         :param create_defaults: значения для создания новой записи
@@ -295,8 +299,7 @@ class QuerySet:
             return obj, False
         validate_has_columns(obj, *update_defaults.keys())
         obj.update(**update_defaults)
-        if commit:
-            await self._session.commit()
+        await flush_or_commit(obj, session=self._session, flush=flush, commit=commit)
         return obj, created
 
     async def in_bulk(self, id_list: list[Any] = None, *, field_name="id") -> dict[Any:Model]:
@@ -333,7 +336,7 @@ class QuerySet:
         """
         return await self.count() > 0
 
-    async def delete(self) -> Result[Model]:
+    async def delete(self, flush: bool = False, commit: bool = False) -> Result[Model]:
         """
         Выполняет удаление записей, удовлетворяющих заданным условиям
 
@@ -342,9 +345,11 @@ class QuerySet:
         Если необходимо, чтобы запрос DELETE что-то вернул, то необходимо вызвать метод QuerySet.returning()
         """
         stmt = self._query_builder.build_delete_stmt()
-        return await self._session.execute(stmt)
+        result = await self._session.execute(stmt)
+        await flush_or_commit(session=self._session, flush=flush, commit=commit)
+        return result
 
-    async def update(self, **kw) -> Result[Model]:
+    async def update(self, values: dict[str:Any], flush: bool = False, commit: bool = False) -> Result[Model]:
         """
         Выполняет обновление записей, удовлетворяющих заданным условиям
 
@@ -352,23 +357,14 @@ class QuerySet:
 
         Если необходимо, чтобы запрос DELETE что-то вернул, то необходимо вызвать метод QuerySet.returning()
 
-        :param kw: поля и их новые значения
-        """
-        stmt = self._query_builder.build_update_stmt(kw)
-        return await self._session.execute(stmt)
-
-    async def _flush_or_commit(self, *objs: Model, flush: bool, commit: bool) -> None:
-        """
-        Выполняет flush или commit
-
-        :param objs: экземпляры для flush
+        :param values: поля и их новые значения
         :param flush: признак необходимости выполнить flush
         :param commit: признак необходимости выполнить сommit
         """
-        if flush and not commit:
-            await self._session.flush(objs)
-        elif commit:
-            await self._session.commit()
+        stmt = self._query_builder.build_update_stmt(values)
+        result = await self._session.execute(stmt)
+        await flush_or_commit(session=self._session, flush=flush, commit=commit)
+        return result
 
     def _extract_model_params(self, defaults: dict | None, **kwargs: dict[str:Any]) -> dict[str:Any]:
         defaults = defaults or {}
