@@ -114,7 +114,7 @@ class QuerySet:
         :param args: перечисленные через запятую join-ы
         """
         clone = self._clone()
-        self._query_builder.join(*args, isouter=True)
+        clone._query_builder.join(*args, isouter=True)
         return clone
 
     def innerjoin(self, *args: str) -> Self:
@@ -133,7 +133,7 @@ class QuerySet:
         :param args: перечисленные через запятую строковые названия join-ов
         """
         clone = self._clone()
-        self._query_builder.join(*args, isouter=False)
+        clone._query_builder.join(*args, isouter=False)
         return clone
 
     def execution_options(self, **kw: dict[str:Any]) -> Self:
@@ -214,7 +214,7 @@ class QuerySet:
         """
         stmt = self._query_builder.build_select_stmt()
         result = await self._session.execute(stmt)
-        return self._iterable_result_func(result)
+        return self._iterable_result_func(result.unique())
 
     async def first(self) -> Model | None:
         """

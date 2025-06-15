@@ -147,6 +147,7 @@ class QueryBuilder:
         """
         validate_has_columns(self._model_cls, *args)
         self._values_list.clear()
+        # todo: если не указаны args, то все поля модели
         for field in args:
             self._values_list.append(get_column(self._model_cls, field))
 
@@ -168,6 +169,7 @@ class QueryBuilder:
         """
         stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
         stmt = self._apply_execution_options(stmt)
+        print("первый join")
         stmt = self._apply_joins(stmt)
         stmt = self._apply_where(stmt)
         if self._options:
@@ -186,6 +188,7 @@ class QueryBuilder:
             # предположим, что у одного Section есть три связных Subsection.  тогда, если задать limit равным 1,
             # то в итоге получим Section, у которого в Section.subsections будет один Subsection
             subquery = select(func.distinct(*self._get_model_pk()))
+            print("\nвторой join")
             subquery = self._apply_joins(subquery)
             subquery = self._apply_where(subquery)
             subquery = self._apply_order_by(subquery)
@@ -249,6 +252,7 @@ class QueryBuilder:
                 joins_tree = joins_tree.setdefault(attr, {})
                 model = relationship.mapper.class_
             prev[last_join_attr]["isouter"] = isouter
+        print(self._joins)
 
     def _apply_execution_options(self, stmt: Select) -> Select:
         """
@@ -263,6 +267,7 @@ class QueryBuilder:
     def _apply_options(self, stmt: Select) -> Select:
         """
         Применяет к запросу options
+
         :param stmt: запрос
         """
         for relationship_names in self._flat_options(self._options):
@@ -396,7 +401,9 @@ class QueryBuilder:
         # todo: проjoinить одну таблицу несколько раз не получится
         model_cls = model_cls or self._model_cls
         joins = self._joins if joins is None else joins
+        print('===> joins', joins, self._joins)
         for join, value in joins.get("children", {}).items():
+            print(join, value)
             isouter = value.get("isouter", False)
             relationship = self._get_relationship(model_cls, join)
             stmt = stmt.join(relationship.class_attribute, isouter=isouter)

@@ -74,14 +74,13 @@ async def test(
         .objects
         # .filter(subsections__status__code='published')
         # .order_by('status_id', 'status_id')
-        # .outerjoin("subsections")
+        .outerjoin("subsections")
+        .options("subsections")
         # .returning('id', 'name')
-        # .options("subsections__status")
         # .execution_options(populate_existing=True)
     )
-    # result = await queryset.all()
-    # rer = result.mappings().all()
-    r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
+    r = await queryset.values_list().all()
+    # r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
     print(r)
     return r
 
