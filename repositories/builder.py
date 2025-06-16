@@ -1,15 +1,15 @@
 import logging
 from typing import Any, Literal, Type
 
-from sqlalchemy import inspect, Column, Select, select, func, delete, Delete, update, Update
-from sqlalchemy.orm import Relationship, contains_eager, joinedload
+from sqlalchemy import Column, Select, select, func, delete, Delete, update, Update
+from sqlalchemy.orm import contains_eager, joinedload
 from sqlalchemy.sql.operators import eq
 
 from repositories.constants import LOOKUP_SEP
-from repositories.exceptions import ColumnNotFoundError, RelationshipNotFoundError
+from repositories.exceptions import ColumnNotFoundError
 from repositories.lookups import lookups
 from repositories.types import Model
-from repositories.utils import validate_has_columns, get_column
+from repositories.utils import validate_has_columns, get_column, get_relationship, get_model_pk
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class QueryBuilder:
             options = self._options
             joins = self._joins
             for attr in option_path.split(LOOKUP_SEP):
-                relationship = self._get_relationship(model, attr, raise_=True)
+                relationship = get_relationship(model, attr, raise_=True)
                 options = options.setdefault(attr, {})
                 joins = joins.setdefault("children", {}).setdefault(attr, {})
                 model = relationship.mapper.class_
@@ -156,7 +156,7 @@ class QueryBuilder:
         Возвращает запрос на подсчет количества записей
         """
         stmt = (
-            select(func.count(func.distinct(*self._get_model_pk())))
+            select(func.count(func.distinct(*get_model_pk(self._model_cls))))
             .select_from(self._model_cls)
         )
         stmt = self._apply_joins(stmt)
@@ -169,7 +169,6 @@ class QueryBuilder:
         """
         stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
         stmt = self._apply_execution_options(stmt)
-        print("первый join")
         stmt = self._apply_joins(stmt)
         stmt = self._apply_where(stmt)
         if self._options:
@@ -187,8 +186,7 @@ class QueryBuilder:
             #
             # предположим, что у одного Section есть три связных Subsection.  тогда, если задать limit равным 1,
             # то в итоге получим Section, у которого в Section.subsections будет один Subsection
-            subquery = select(func.distinct(*self._get_model_pk()))
-            print("\nвторой join")
+            subquery = select(func.distinct(*get_model_pk(self._model_cls)))
             subquery = self._apply_joins(subquery)
             subquery = self._apply_where(subquery)
             subquery = self._apply_order_by(subquery)
@@ -245,7 +243,7 @@ class QueryBuilder:
             joins_tree = self._joins
             prev, last_join_attr = None, None
             for attr in join.split(LOOKUP_SEP):
-                relationship = self._get_relationship(model, attr, True)
+                relationship = get_relationship(model, attr, True)
                 last_join_attr = attr
                 joins_tree = joins_tree.setdefault("children", {})
                 prev = joins_tree
@@ -275,7 +273,7 @@ class QueryBuilder:
             option = None
             model = self._model_cls
             for relationship_name in relationship_names:
-                relationship = self._get_relationship(model, relationship_name, raise_=True)
+                relationship = get_relationship(model, relationship_name, raise_=True)
                 class_attribute = relationship.class_attribute
                 if relationship_name in joins:
                     option = (
@@ -327,9 +325,8 @@ class QueryBuilder:
             # тогда, если закончить на первом найденном столбце - first_name, то, во-первых,
             # пользователь не будет знать, что неверно сформировал фильтр, и, во-вторых, он
             # может получить неожидаемый результат, тк возможно он хотел отфильтровать по last_name
-            if relationship := self._get_relationship(model, column_or_relationship_name):
-                joins = joins.setdefault("children", {})
-                joins = joins.setdefault(column_or_relationship_name, {})
+            if relationship := get_relationship(model, column_or_relationship_name):
+                joins = joins.setdefault("children", {}).setdefault(column_or_relationship_name, {})
                 if idx == len(attrs) - 1:
                     raise ColumnNotFoundError(model, column_or_relationship_name)
                 model = relationship.mapper.class_
@@ -401,39 +398,9 @@ class QueryBuilder:
         # todo: проjoinить одну таблицу несколько раз не получится
         model_cls = model_cls or self._model_cls
         joins = self._joins if joins is None else joins
-        print('===> joins', joins, self._joins)
         for join, value in joins.get("children", {}).items():
-            print(join, value)
             isouter = value.get("isouter", False)
-            relationship = self._get_relationship(model_cls, join)
+            relationship = get_relationship(model_cls, join)
             stmt = stmt.join(relationship.class_attribute, isouter=isouter)
             stmt = self._apply_joins(stmt, relationship.mapper.class_, value)
         return stmt
-
-    def _get_model_pk(self) -> tuple[Column, ...]:
-        """
-        Возвращает кортеж столбцов, составляющих первичный ключ
-        """
-        return inspect(self._model_cls).primary_key
-
-    def _validate_has_relationship(self, model_cls, relationship_name: str) -> None:
-        """
-        Валидирует, что модель model_cls имеет связь relationship_name
-
-        :param model_cls: класс модели SQLAlchemy
-        :param relationship_name: название связи
-        """
-        if relationship_name not in inspect(model_cls).relationships:
-            raise RelationshipNotFoundError(model_cls, relationship_name)
-
-    def _get_relationship(self, model_cls, relationship_name: str, raise_: bool = False) -> Relationship | None:
-        """
-        Возвращает связь (relationship) по ее названию relationship_name
-
-        :param model_cls: класс модели SQLAlchemy
-        :param relationship_name: название связи
-        """
-        relationship = inspect(model_cls).relationships.get(relationship_name)
-        if not relationship and raise_:
-            raise RelationshipNotFoundError(model_cls, relationship_name)
-        return relationship
