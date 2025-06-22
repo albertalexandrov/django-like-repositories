@@ -1,22 +1,51 @@
 import logging
-from typing import Any, Literal, Type
+from typing import Any, Type, Self
 
-from sqlalchemy import Column, Select, select, func, delete, Delete, update, Update
+from sqlalchemy import Select, select, func, delete, Delete, update, Update, inspect
 from sqlalchemy.orm import contains_eager, joinedload
 from sqlalchemy.sql.operators import eq
 
 from repositories.constants import LOOKUP_SEP
-from repositories.exceptions import ColumnNotFoundError
 from repositories.lookups import lookups
 from repositories.types import Model
-from repositories.utils import validate_has_columns, get_column, get_relationship, get_model_pk
+from repositories.utils import get_column, get_relationship, get_pk, get_relationships, get_columns, get_annotations
 
 logger = logging.getLogger(__name__)
 
 
+class InvalidFilteringFieldError(Exception):
+
+    def __init__(self, filter_field: str):
+        error = f"Некорректное поле для фильтрации - {filter_field}"
+        super().__init__(error)
+
+
+class InvalidOrderingFieldError(Exception):
+
+    def __init__(self, ordering_field: str):
+        error = f"Некорректное поле для сортировки - {ordering_field}"
+        super().__init__(error)
+
+
+class InvalidOptionFieldError(Exception):
+
+    def __init__(self, option_field: str):
+        error = f"Некорректное поле для options - {option_field}"
+        super().__init__(error)
+
+
+class InvalidJoinFieldError(Exception):
+
+    def __init__(self, join_field: str):
+        error = f"Некорректное поле для join - {join_field}"
+        super().__init__(error)
+
+
 class QueryBuilder:
     """
-    Хранитель информации о параметрах SQL-запроса
+    Обертка над запросом SQLAlchemy
+
+    Собирает в себя параметры запроса и в конце генерирует запрос
     """
 
     def __init__(self, model_cls: Type[Model]):
@@ -24,256 +53,223 @@ class QueryBuilder:
         self._where = {}
         self._joins = {}
         self._options = {}
-        self._order_by = {}
+        self._ordering = {}
         self._limit = None
         self._offset = None
         self._returning = []
-        self._execution_options = None
+        self._execution_options = {}
         self._values_list = []
 
-    def filter(self, **kw: dict[str:Any]) -> None:
+    def clone(self) -> Self:
         """
-        Обрабатывает условия фильтрации и сопутствующие join-ы
+        Создает копию QueryBuilder
+        """
+        clone = self.__class__(self._model_cls)
+        clone._where = {**self._where}
+        clone._ordering = {**self._ordering}
+        clone._joins = {**self._joins}
+        clone._options = {**self._options}
+        clone._returning = [*self._returning]
+        clone._execution_options = {**self._execution_options}
+        clone._values_list = {*self._values_list}
+        return clone
 
-        :param kw: условия фильтрации
-        """
-        # предполагаем, что в последней позиции названия фильтра filter_name находится lookup
-        lookup_expected_idx = -1
-        for filter_name, filter_value in kw.items():
-            if filter_name in self._where:
-                logger.warning(f"Фильтр {filter_name} уже был применен ранее")
-            if LOOKUP_SEP in filter_name:
-                # здесь будет происходить определение модели и столбца (column_name),
-                # по которому нужно выполнить фильтрацию
-                attrs = filter_name.split(LOOKUP_SEP)
-                if attrs[lookup_expected_idx] == attrs[lookup_expected_idx - 1]:
-                    # название lookup-а и столбца могут совпадать.  например, для модели:
-                    #
-                    #   class Meet:
-                    #       title: Mapped[str]
-                    #       day: Mapped[date]
-                    #
-                    # может понадобиться выполнить фильтрацию по дню недели фильтром day__day
-                    lookup = attrs.pop()
+    def filter(self, **kw: dict[str:Any]) -> None:
+        for filter_field, filter_value in kw.items():
+            model_cls = self._model_cls
+            column, op = None, eq
+            joins = self._joins
+            expected = get_annotations(model_cls)
+            for attr in filter_field.split(LOOKUP_SEP):
+                relationships = get_relationships(model_cls)
+                columns = get_columns(model_cls)
+                if attr not in expected:
+                    raise InvalidFilteringFieldError(filter_field)
+                if attr in relationships:
+                    relationship = relationships[attr]
+                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    model_cls = relationship.mapper.class_
+                    expected = get_annotations(model_cls)
+                elif attr in columns:
+                    column = columns[attr]
+                    expected = lookups
+                elif attr in lookups:
+                    op = lookups[attr]
+                    expected = {}
                 else:
-                    lookup = attrs.pop() if attrs[lookup_expected_idx] in lookups else 'exact'
-                if not (op := lookups.get(lookup)):
-                    raise ValueError(f"lookup `{lookup}` не найден")
-                column = self._extract_column(attrs, filter_name, 'filter')
-            else:
-                op = eq
-                column = get_column(self._model_cls, filter_name)
-            self._where[filter_name] = op(column, filter_value)
+                    raise InvalidFilteringFieldError(filter_field)
+            assert column is not None
+            self._where[filter_field] = op(column, filter_value)
+
+    def order_by(self, *args: str) -> None:
+        for ordering_field in args:
+            model_cls = self._model_cls
+            joins = self._joins
+            column = None
+            ordering_field = ordering_field.strip("+")
+            expected = get_annotations(model_cls)
+            for attr in ordering_field.strip("-").split(LOOKUP_SEP):
+                relationships = get_relationships(model_cls)
+                columns = get_columns(model_cls)
+                if attr not in expected:
+                    raise InvalidOrderingFieldError(ordering_field)
+                if attr in relationships:
+                    relationship = relationships[attr]
+                    model_cls = relationship.mapper.class_
+                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    expected = get_annotations(model_cls)
+                elif attr in columns:
+                    column = columns[attr]
+                    expected = {}
+                else:
+                    raise InvalidOrderingFieldError(ordering_field)
+            assert column is not None
+            self._ordering[ordering_field] = column.desc() if ordering_field.startswith("-") else column.asc()
+
+    def options(self, *args: str) -> None:
+        for option_field in args:
+            model_cls = self._model_cls
+            options = self._options
+            joins = self._joins
+            relationships = get_relationships(model_cls)
+            for attr in option_field.split(LOOKUP_SEP):
+                if attr in relationships:
+                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    options = options.setdefault(attr, {})
+                    model_cls = relationships[attr].mapper.class_
+                    relationships = get_relationships(model_cls)
+                else:
+                    raise InvalidOptionFieldError(option_field)
+
+    def returning(self, *args: str, return_model: bool = False) -> None:
+        # будет учтено только в UPDATE и DELETE запросах
+        if args and return_model:
+            raise ValueError("args и return_model не могут быть заданы одновременно")
+        if not args and not return_model:
+            raise ValueError("Задайте либо args, либо return_model")
+        self._returning.clear()
+        if args:
+            for column_name in args:
+                column = get_column(self._model_cls, column_name)
+                self._returning.append(column)
+        if return_model:
+            self._returning.append(self._model_cls)
+
+    def execution_options(self, **kw: dict[str, Any]) -> None:
+        self._execution_options = kw
+
+    def values_list(self, *args: str) -> None:
+        self._values_list.clear()
+        for column_name in args:
+            column = get_column(self._model_cls, column_name)
+            self._values_list.append(column)
+
+    def outerjoin(self, *args: str) -> None:
+        for join_field in args:
+            model_cls = self._model_cls
+            joins = self._joins
+            penultimate_joins, last_attr = None, None
+            relationships = get_relationships(model_cls)
+            for attr in join_field.split(LOOKUP_SEP):
+                if attr in relationships:
+                    last_attr = attr
+                    joins = joins.setdefault("children", {})
+                    penultimate_joins = joins
+                    joins = joins.setdefault(attr, {})
+                    model_cls = relationships[attr].mapper.class_
+                    relationships = get_relationships(model_cls)
+                else:
+                    raise InvalidJoinFieldError(join_field)
+            penultimate_joins[last_attr]["isouter"] = True
 
     def limit(self, limit: int | None) -> None:
-        """
-        Сохраняет ограничение количества строк
-
-        :param limit: количество строк
-        """
         if limit < 1:
             raise ValueError("limit не может быть меньше 1")
         self._limit = limit
 
     def offset(self, offset: int | None) -> None:
-        """
-        Сохраняет смещение
-
-        :param offset: смещение
-        """
         if offset < 0:
             raise ValueError("offset не можеь быть меньше 0")
         self._offset = offset
 
-    def order_by(self, *args: str) -> None:
-        """
-        Обрабатывает условия сортировки и сопутствующие join-ы
-
-        :param args: условия фильтрации
-        """
-        for ordering_name in args:
-            if ordering_name in self._order_by:
-                logger.warning(f"По полю `{ordering_name}` ранее уже была применена сортировка")
-            column = self._extract_column(ordering_name.lstrip("+-").split(LOOKUP_SEP), ordering_name, 'order_by')
-            column = column.desc() if ordering_name.startswith("-") else column.asc()
-            self._order_by[ordering_name] = column
-
-    def options(self, *args: str) -> None:
-        """
-        Обрабатывает options для подгрузки экземпляров связных моделей
-
-        :param args: options
-        """
-        for option_path in args:
-            model = self._model_cls
-            options = self._options
-            joins = self._joins
-            for attr in option_path.split(LOOKUP_SEP):
-                relationship = get_relationship(model, attr, raise_=True)
-                options = options.setdefault(attr, {})
-                joins = joins.setdefault("children", {}).setdefault(attr, {})
-                model = relationship.mapper.class_
-
-    def returning(self, *args: str, return_model: bool = False) -> None:
-        """
-        Сохраняет информацию о том, что нужно вернуть в ходе выполнения запроса
-
-        Учитывается при запросах UPDATE и DELETE
-
-        :param args: названия столбцов
-        :param return_model: признак необходимости вернуть всех столбцы модели
-        """
-        if args and return_model:
-            raise ValueError("`args` и `return_model` не могут быть заданы одновременно")
-        self._returning.clear()
-        if args:
-            for col in args:
-                column = get_column(self._model_cls, col)
-                self._returning.append(column)
-        if return_model:
-            self._returning.append(self._model_cls)
-
-    def execution_options(self, **kwargs: dict[str:Any]) -> None:
-        """
-        Сохраняет параметры выполнения запроса
-        """
-        self._execution_options = kwargs
-
-    def values_list(self, *args: str) -> None:
-        """
-        Добавляет столбцы для выборки в итоговый запрос
-
-        :param args: названия столбцов
-        """
-        validate_has_columns(self._model_cls, *args)
-        self._values_list.clear()
-        # todo: если не указаны args, то все поля модели
-        for field in args:
-            self._values_list.append(get_column(self._model_cls, field))
-
     def build_count_stmt(self) -> Select:
-        """
-        Возвращает запрос на подсчет количества записей
-        """
+        pk = get_pk(self._model_cls)
         stmt = (
-            select(func.count(func.distinct(*get_model_pk(self._model_cls))))
+            select(func.count(func.distinct(pk)))
             .select_from(self._model_cls)
         )
         stmt = self._apply_joins(stmt)
+        # важно сперва применить join-ы и только потом фильтровать
         stmt = self._apply_where(stmt)
         return stmt
 
     def build_select_stmt(self) -> Select:
-        """
-        Возвращает запрос на выборку данных
-        """
+        if self._options:
+            # в случае, когда заданы options, необходим подзапрос,
+            # чтобы корректно подгрузить экземпляры связных моделей
+            return self._build_stmt_w_options()
+        return self._build_stmt_wo_options()
+
+    def build_delete_stmt(self) -> Delete:
+        pk = get_pk(self._model_cls)
+        stmt = select(func.distinct(pk))
+        stmt = self._apply_execution_options(stmt)
+        stmt = self._apply_joins(stmt)
+        # важно сперва применить join-ы и только потом фильтровать
+        stmt = self._apply_where(stmt)
+        stmt = delete(self._model_cls).where(pk.in_(stmt))
+        if self._returning:
+            stmt = stmt.returning(*self._returning)
+        return stmt
+
+    def build_update_stmt(self, values: dict[str, Any]) -> Update:
+        pk = get_pk(self._model_cls)
+        stmt = select(func.distinct(pk))
+        stmt = self._apply_execution_options(stmt)
+        stmt = self._apply_joins(stmt, self._joins)
+        # важно сперва применить join-ы и только потом фильтровать
+        stmt = self._apply_where(stmt)
+        stmt = update(self._model_cls).where(pk.in_(stmt)).values(**values)
+        if self._returning:
+            stmt = stmt.returning(*self._returning)
+        return stmt
+
+    def _build_stmt_wo_options(self) -> Select:
         stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
         stmt = self._apply_execution_options(stmt)
         stmt = self._apply_joins(stmt)
+        # важно сперва применить join-ы и только потом фильтровать и сортировать
         stmt = self._apply_where(stmt)
-        if self._options:
-            # поскольку все связные модели join-ятся, то нельзя просто так применить limit и offset
-            # особенно если связи обратные.  рассмотрим пример:
-            #
-            #   class Section(Base):
-            #       id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-            #       subsections: Mapped[list["Subsection"]] = relationship(back_populates="section")
-            #
-            #
-            #   class Subsection(Base):
-            #       id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-            #       section: Mapped["Section"] = relationship(back_populates="subsections")
-            #
-            # предположим, что у одного Section есть три связных Subsection.  тогда, если задать limit равным 1,
-            # то в итоге получим Section, у которого в Section.subsections будет один Subsection
-            subquery = select(func.distinct(*get_model_pk(self._model_cls)))
-            subquery = self._apply_joins(subquery)
-            subquery = self._apply_where(subquery)
-            subquery = self._apply_order_by(subquery)
-            subquery = self._apply_limit(subquery)
-            subquery = self._apply_offset(subquery)
-            stmt = stmt.where(self._model_cls.id.in_(subquery))
-            if not self._values_list:
-                stmt = self._apply_options(stmt)  # должно быть именно тут
-        else:
-            stmt = self._apply_order_by(stmt)
-            stmt = self._apply_limit(stmt)
-            stmt = self._apply_offset(stmt)
+        stmt = self._apply_order_by(stmt)
         return stmt
 
-    def build_delete_stmt(self) -> Delete:
-        """
-        Возвращает запрос на удаление
-        """
-        stmt = select(func.distinct(self._model_cls.id))
+    def _build_stmt_w_options(self) -> Select:
+        pk = get_pk(self._model_cls)
+        stmt = select(self._model_cls)
+        stmt = self._apply_execution_options(stmt)
         stmt = self._apply_joins(stmt)
+        # важно сперва применить join-ы и только потом фильтровать и сортировать
         stmt = self._apply_where(stmt)
-        stmt = delete(self._model_cls).where(self._model_cls.id.in_(stmt))
-        if self._returning:
-            stmt = stmt.returning(*self._returning)
+        subquery = select(func.distinct(pk))
+        subquery = self._apply_joins(subquery)
+        subquery = self._apply_where(subquery)
+        subquery = self._apply_limit(subquery)
+        subquery = self._apply_offset(subquery)
+        stmt = stmt.where(pk.in_(subquery))
+        stmt = self._apply_order_by(stmt)
+        stmt = self._apply_options(stmt)
         return stmt
-
-    def build_update_stmt(self, values: dict[str:Any]) -> Update:
-        """
-        Возвращает запрос на обновление
-
-        :param values: значения для обновления
-        """
-        stmt = select(func.distinct(self._model_cls.id))
-        stmt = self._apply_joins(stmt, self._joins)
-        stmt = self._apply_where(stmt)
-        stmt = (
-            update(self._model_cls)
-            .where(self._model_cls.id.in_(stmt))
-            .values(**values)
-        )
-        if self._returning:
-            stmt = stmt.returning(*self._returning)
-        return stmt
-
-    def join(self, *args: str, isouter: bool) -> None:
-        """
-        Сохраняет join-ы
-
-        :param args: перечисленные через запятую join-ы
-        :param isouter: признак внешнего join-а
-        """
-        for join in args:
-            model = self._model_cls
-            joins_tree = self._joins
-            prev, last_join_attr = None, None
-            for attr in join.split(LOOKUP_SEP):
-                relationship = get_relationship(model, attr, True)
-                last_join_attr = attr
-                joins_tree = joins_tree.setdefault("children", {})
-                prev = joins_tree
-                joins_tree = joins_tree.setdefault(attr, {})
-                model = relationship.mapper.class_
-            prev[last_join_attr]["isouter"] = isouter
-        print(self._joins)
 
     def _apply_execution_options(self, stmt: Select) -> Select:
-        """
-        Применяет к запросу stmt параметры
-
-        :param stmt: запрос
-        """
-        execution_options = self._execution_options or {}
-        stmt = stmt.execution_options(**execution_options)
-        return stmt
+        return stmt.execution_options(**self._execution_options)
 
     def _apply_options(self, stmt: Select) -> Select:
-        """
-        Применяет к запросу options
-
-        :param stmt: запрос
-        """
         for relationship_names in self._flat_options(self._options):
             joins = self._joins["children"]
             option = None
-            model = self._model_cls
+            model_cls = self._model_cls
             for relationship_name in relationship_names:
-                relationship = get_relationship(model, relationship_name, raise_=True)
+                relationship = get_relationship(model_cls, relationship_name)
                 class_attribute = relationship.class_attribute
                 if relationship_name in joins:
                     option = (
@@ -283,14 +279,14 @@ class QueryBuilder:
                     )
                 else:
                     option = (
-                        option.joinedload(class_attribute) if option else joinedload(class_attribute)
+                        option.joinedload(class_attribute, innerjoin=True) if option else joinedload(class_attribute, innerjoin=True)
                     )
                 joins = joins.get(relationship_name, {}).get("children", {})
-                model = relationship.mapper.class_
+                model_cls = relationship.mapper.class_
             stmt = stmt.options(option)
         return stmt
 
-    def _flat_options(self, options: dict[str:dict], flattened: list = None) -> list[str, ...]:
+    def _flat_options(self, options: dict[str, dict], flattened: list = None) -> list[str, ...]:
         if flattened is None:
             flattened = []
         result = []
@@ -302,97 +298,21 @@ class QueryBuilder:
                 result.extend(self._flat_options(value, new_prefix))
         return result
 
-    def _extract_column(self, attrs: list[str], field_name: str, op: Literal['order_by', 'filter']) -> Column:
-        """
-        Извлекает из строки вида column1__relationship__column2 столбец SQLAlchemy
-
-        :param attrs:
-        :param field_name:
-        :param op:
-        """
-        model = self._model_cls
-        joins = self._joins
-        column_name = None
-        for idx, column_or_relationship_name in enumerate(attrs):
-            # необходимо пройти все column_or_relationship_name, чтобы проверить валидность фильтра
-            # рассмотрим пример.  пусть есть модель:
-            #
-            #   class User(Base):
-            #       first_name: Mapped[str]
-            #       last_name: Mapped[str]
-            #
-            # и пусть пользователь задал фильтр first_name__last_name
-            # тогда, если закончить на первом найденном столбце - first_name, то, во-первых,
-            # пользователь не будет знать, что неверно сформировал фильтр, и, во-вторых, он
-            # может получить неожидаемый результат, тк возможно он хотел отфильтровать по last_name
-            if relationship := get_relationship(model, column_or_relationship_name):
-                joins = joins.setdefault("children", {}).setdefault(column_or_relationship_name, {})
-                if idx == len(attrs) - 1:
-                    raise ColumnNotFoundError(model, column_or_relationship_name)
-                model = relationship.mapper.class_
-            else:
-                validate_has_columns(model, column_or_relationship_name)
-                if column_name is not None:
-                    # пусть есть модель:
-                    #
-                    #   class User(Base):
-                    #       first_name: Mapped[str]
-                    #       last_name: Mapped[str]
-                    #
-                    # и пусть пользователь задал фильтр first_name__last_name.  тогда, если не выполнить
-                    # проверку, будет выполнена фильтрация по последнему валидному полю - last_name
-                    if op == 'filter':
-                        raise ValueError(
-                            f"`В поле {field_name}` указано несколько столбцов модели "
-                            f"{model.__name__} для фильтрации, что не дает однозначно понять, "
-                            "по какому именно столбцу необходимо выполнить фильтрацию"
-                        )
-                    elif op == 'order_by':
-                        raise ValueError(
-                            f"`В поле {field_name}` указано несколько столбцов модели "
-                            f"{model.__name__} для сортировки, что не дает однозначно понять, "
-                            "по какому именно столбцу необходимо выполнить сортировку"
-                        )
-                    else:
-                        raise ValueError(f"Неожиданное значение параметра `op` - `{op}`")
-                column_name = column_or_relationship_name
-        return get_column(model, column_name)
-
     def _apply_offset(self, stmt: Select) -> Select:
-        """
-        Добавляет запросу stmt смещение
-
-        :param stmt: запрос
-        """
         if self._offset is not None:
             stmt = stmt.offset(self._offset)
         return stmt
 
     def _apply_limit(self, stmt: Select) -> Select:
-        """
-        Добавляет запросу stmt ограничение на количество
-
-        :param stmt: запрос
-        """
         if self._limit is not None:
             stmt = stmt.limit(self._limit)
         return stmt
 
     def _apply_where(self, stmt: Select) -> Select:
-        """
-        Добавляет запросу statement условия фильтрации
-
-        :param stmt: запрос
-        """
         return stmt.where(*self._where.values())
 
     def _apply_order_by(self, stmt: Select) -> Select:
-        """
-        Добавляет запросу сортировку
-
-        :param stmt: запрос
-        """
-        return stmt.order_by(*self._order_by.values())
+        return stmt.order_by(*self._ordering.values())
 
     def _apply_joins(self, stmt: Select, model_cls=None, joins: dict = None) -> Select:
         # todo: проjoinить одну таблицу несколько раз не получится
