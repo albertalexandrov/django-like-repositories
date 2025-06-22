@@ -72,17 +72,19 @@ async def test(
     queryset = (
         repository
         .objects
-        .filter(name="2")
-        # .order_by('name', '-status_id')
-        # .innerjoin("")
-        # .outerjoin("subsections")
-        # .options("subsections")
+        # .filter(status_id=1)
+        .filter(status__id=1)
+        .filter(subsections__status__code="published")
+        .order_by('status__code')
+        .outerjoin("status")
+        .options("subsections")
+        # .options("subsections__status")
         # .returning('id', 'name')
         # .execution_options(populate_existing=True)
     )
-    r = await queryset.returning('id').delete()
+    r = await queryset.all()
     # r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
-    print(r.scalars().all())
+    # print(r.scalars().all())
     return r
 
 

@@ -1,8 +1,9 @@
 import logging
+from copy import deepcopy
 from typing import Any, Type, Self
 
-from sqlalchemy import Select, select, func, delete, Delete, update, Update, inspect
-from sqlalchemy.orm import contains_eager, joinedload
+from sqlalchemy import Select, select, func, delete, Delete, update, Update
+from sqlalchemy.orm import contains_eager, joinedload, aliased
 from sqlalchemy.sql.operators import eq
 
 from repositories.constants import LOOKUP_SEP
@@ -52,6 +53,7 @@ class QueryBuilder:
         self._model_cls = model_cls
         self._where = {}
         self._joins = {}
+        self._subquery_joins = {}
         self._options = {}
         self._ordering = {}
         self._limit = None
@@ -79,6 +81,7 @@ class QueryBuilder:
             model_cls = self._model_cls
             column, op = None, eq
             joins = self._joins
+            subquery_joins = self._subquery_joins
             expected = get_annotations(model_cls)
             for attr in filter_field.split(LOOKUP_SEP):
                 relationships = get_relationships(model_cls)
@@ -87,18 +90,20 @@ class QueryBuilder:
                     raise InvalidFilteringFieldError(filter_field)
                 if attr in relationships:
                     relationship = relationships[attr]
-                    joins = joins.setdefault("children", {}).setdefault(attr, {})
-                    model_cls = relationship.mapper.class_
+                    joins = joins.setdefault("children", {})
+                    subquery_joins = subquery_joins.setdefault("children", {})
+                    joins, model_cls = self._join(relationship, attr, joins)
                     expected = get_annotations(model_cls)
                 elif attr in columns:
-                    column = columns[attr]
+                    column = getattr(model_cls, attr)
                     expected = lookups
                 elif attr in lookups:
                     op = lookups[attr]
                     expected = {}
                 else:
                     raise InvalidFilteringFieldError(filter_field)
-            assert column is not None
+            if column is None:
+                raise InvalidFilteringFieldError(filter_field)
             self._where[filter_field] = op(column, filter_value)
 
     def order_by(self, *args: str) -> None:
@@ -115,15 +120,16 @@ class QueryBuilder:
                     raise InvalidOrderingFieldError(ordering_field)
                 if attr in relationships:
                     relationship = relationships[attr]
-                    model_cls = relationship.mapper.class_
-                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    joins = joins.setdefault("children", {})
+                    joins, model_cls = self._join(relationship, attr, joins)
                     expected = get_annotations(model_cls)
                 elif attr in columns:
-                    column = columns[attr]
+                    column = getattr(model_cls, attr)
                     expected = {}
                 else:
                     raise InvalidOrderingFieldError(ordering_field)
-            assert column is not None
+            if column is None:
+                raise InvalidOrderingFieldError(ordering_field)
             self._ordering[ordering_field] = column.desc() if ordering_field.startswith("-") else column.asc()
 
     def options(self, *args: str) -> None:
@@ -134,12 +140,14 @@ class QueryBuilder:
             relationships = get_relationships(model_cls)
             for attr in option_field.split(LOOKUP_SEP):
                 if attr in relationships:
-                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    relationship = relationships[attr]
                     options = options.setdefault(attr, {})
-                    model_cls = relationships[attr].mapper.class_
+                    joins = joins.setdefault("children", {})
+                    joins, model_cls = self._join(relationship, attr, joins)
                     relationships = get_relationships(model_cls)
                 else:
                     raise InvalidOptionFieldError(option_field)
+        print(self._options)
 
     def returning(self, *args: str, return_model: bool = False) -> None:
         # будет учтено только в UPDATE и DELETE запросах
@@ -173,10 +181,10 @@ class QueryBuilder:
             for attr in join_field.split(LOOKUP_SEP):
                 if attr in relationships:
                     last_attr = attr
+                    relationship = relationships[attr]
                     joins = joins.setdefault("children", {})
                     penultimate_joins = joins
-                    joins = joins.setdefault(attr, {})
-                    model_cls = relationships[attr].mapper.class_
+                    joins, model_cls = self._join(relationship, attr, joins)
                     relationships = get_relationships(model_cls)
                 else:
                     raise InvalidJoinFieldError(join_field)
@@ -226,13 +234,24 @@ class QueryBuilder:
         pk = get_pk(self._model_cls)
         stmt = select(func.distinct(pk))
         stmt = self._apply_execution_options(stmt)
-        stmt = self._apply_joins(stmt, self._joins)
+        stmt = self._apply_joins(stmt)
         # важно сперва применить join-ы и только потом фильтровать
         stmt = self._apply_where(stmt)
         stmt = update(self._model_cls).where(pk.in_(stmt)).values(**values)
         if self._returning:
             stmt = stmt.returning(*self._returning)
         return stmt
+
+    def _join(self, relationship, attr: str, joins: dict[str, Any]) -> tuple[dict, Model]:
+        if attr in joins:
+            joins = joins[attr]
+            model_cls = joins["target"]
+        else:
+            model_cls = aliased(relationship.mapper.class_)
+            joins = joins.setdefault(attr, {})
+            joins["target"] = model_cls
+            joins["onclause"] = relationship.class_attribute
+        return joins, model_cls
 
     def _build_stmt_wo_options(self) -> Select:
         stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
@@ -251,7 +270,7 @@ class QueryBuilder:
         # важно сперва применить join-ы и только потом фильтровать и сортировать
         stmt = self._apply_where(stmt)
         subquery = select(func.distinct(pk))
-        subquery = self._apply_joins(subquery)
+        subquery = self._apply_copied_joins(subquery)
         subquery = self._apply_where(subquery)
         subquery = self._apply_limit(subquery)
         subquery = self._apply_offset(subquery)
@@ -259,6 +278,10 @@ class QueryBuilder:
         stmt = self._apply_order_by(stmt)
         stmt = self._apply_options(stmt)
         return stmt
+
+    def _apply_copied_joins(self, stmt: Select) -> Select:
+        joins = deepcopy(self._joins)
+        return self._apply_joins(stmt, joins=joins)
 
     def _apply_execution_options(self, stmt: Select) -> Select:
         return stmt.execution_options(**self._execution_options)
@@ -314,13 +337,14 @@ class QueryBuilder:
     def _apply_order_by(self, stmt: Select) -> Select:
         return stmt.order_by(*self._ordering.values())
 
-    def _apply_joins(self, stmt: Select, model_cls=None, joins: dict = None) -> Select:
-        # todo: проjoinить одну таблицу несколько раз не получится
+    def _apply_joins(self, stmt: Select, model_cls: Type[Model] = None, joins: dict = None) -> Select:
         model_cls = model_cls or self._model_cls
         joins = self._joins if joins is None else joins
-        for join, value in joins.get("children", {}).items():
+        for relationship_name, value in joins.get("children", {}).items():
+            target = value["target"]
+            onclause = value["onclause"]
             isouter = value.get("isouter", False)
-            relationship = get_relationship(model_cls, join)
-            stmt = stmt.join(relationship.class_attribute, isouter=isouter)
+            relationship = get_relationship(model_cls, relationship_name)
+            stmt = stmt.join(target, onclause, isouter=isouter)
             stmt = self._apply_joins(stmt, relationship.mapper.class_, value)
         return stmt
