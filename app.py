@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import with_loader_criteria, selectinload, joinedload, contains_eager, aliased
 
 from dependencies import get_session
+from models import Subsection
 from models.help import Section
 from repositories.help import SectionRepository
 from repositories.users import UsersRepository
@@ -73,11 +75,13 @@ async def test(
         repository
         .objects
         # .filter(status_id=1)
-        .filter(status__id=1)
-        .filter(subsections__status__code="published")
-        .order_by('status__code')
-        .outerjoin("status")
-        .options("subsections")
+        # .filter(status__id=1)
+        # .filter(subsections__status__id=1)
+        # .values_list('id', 'name')
+        # .order_by('status__code')
+        # .outerjoin("status")
+        # .limit(2)
+        # .options("subsections")
         # .options("subsections__status")
         # .returning('id', 'name')
         # .execution_options(populate_existing=True)
@@ -90,6 +94,23 @@ async def test(
 
 @app.get("/test-on-session")
 async def test_on_session(session: AsyncSession = Depends(get_session)):
-    stmt = select(Section)
+    # isouter = True
+    # stmt = (
+    #     select(Section).distinct()
+    #     .join(Section.subsections, isouter=isouter)
+    #     .options(
+    #         joinedload(Section.subsections, innerjoin=not isouter),
+    #         # with_loader_criteria(Subsection, Subsection.status_id == 1)
+    #     )
+    #     .limit(2)
+    #     .where(Subsection.id == 1)
+    # )
+    subquery = select(Section).distinct().limit(2)
+    SectionAlias = aliased(Section, subquery.subquery())
+    stmt = select(SectionAlias)
+    stmt = stmt.join(SectionAlias.subsections)
+    stmt = stmt.options(contains_eager(SectionAlias.subsections))
     result = await session.scalars(stmt)
-    result.one()
+    print(result.all())
+    # for section in result.unique().all():
+    #     print(section.id, len(section.subsections))

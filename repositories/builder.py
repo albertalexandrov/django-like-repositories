@@ -1,11 +1,11 @@
 import logging
-from copy import deepcopy
 from typing import Any, Type, Self
 
 from sqlalchemy import Select, select, func, delete, Delete, update, Update
 from sqlalchemy.orm import contains_eager, joinedload, aliased
 from sqlalchemy.sql.operators import eq
 
+from models import Section, Subsection, PublicationStatus
 from repositories.constants import LOOKUP_SEP
 from repositories.lookups import lookups
 from repositories.types import Model
@@ -47,20 +47,74 @@ class QueryBuilder:
     Обертка над запросом SQLAlchemy
 
     Собирает в себя параметры запроса и в конце генерирует запрос
+
+    рутовая модель пусть всегда будет безалиасной?
+    _where
+        в рутовой модели. просто список? ['name', 'status_id']
+        брать колонки от модели или алиаса
+    _order_by
+        тоже самое как для _where
+
+    _joins
+        при джойнах не всегда нужно выполнять сортировку (в случае с _options с подзапросом)
+
     """
 
     def __init__(self, model_cls: Type[Model]):
         self._model_cls = model_cls
-        self._where = {}
-        self._joins = {}
-        self._subquery_joins = {}
-        self._options = {}
-        self._ordering = {}
+        self._where = {'name': {'op': eq, 'value': "значение"}}
+        self._joins = {
+            "children": {
+                "subsections": {
+                    "model_cls": Subsection,
+                    "where": {
+                        'name': {
+                            'op': eq,
+                            'value': "значение"
+                        }
+                    },
+                    "order_by": {
+                        'status_id': {
+                            'direction': 'asc'
+                        },
+                        'name': {
+                            'direction': 'desc'
+                        },
+                    },
+                    "is_outer": False,
+                    "children": {
+                        "status": {
+                            'model_cls': PublicationStatus,
+                            "where": {
+                                'code': {
+                                    'op': eq,
+                                    'value': "published"
+                                }
+                            },
+                        }
+                    }
+                },
+                "status": {
+                    "model_cls": PublicationStatus,
+                    "is_outer": False,
+                }
+            }
+        }
+        self._options = ["subsections__status", "status"]  # {"subsections": {"status": {}}, "status": {}}
+        self._order_by = {
+            'status_id': {
+                'direction': 'asc'
+            },
+            'name': {
+                'direction': 'desc'
+            },
+        }
         self._limit = None
         self._offset = None
         self._returning = []
         self._execution_options = {}
         self._values_list = []
+        self._last_options = {}
 
     def clone(self) -> Self:
         """
@@ -68,12 +122,14 @@ class QueryBuilder:
         """
         clone = self.__class__(self._model_cls)
         clone._where = {**self._where}
-        clone._ordering = {**self._ordering}
+        clone._order_by = {**self._order_by}
         clone._joins = {**self._joins}
-        clone._options = {**self._options}
+        clone._options = [*self._options]
         clone._returning = [*self._returning]
         clone._execution_options = {**self._execution_options}
-        clone._values_list = {*self._values_list}
+        clone._values_list = [*self._values_list]
+        clone._limit = self._limit
+        clone._offset = self._offset
         return clone
 
     def filter(self, **kw: dict[str:Any]) -> None:
@@ -81,7 +137,6 @@ class QueryBuilder:
             model_cls = self._model_cls
             column, op = None, eq
             joins = self._joins
-            subquery_joins = self._subquery_joins
             expected = get_annotations(model_cls)
             for attr in filter_field.split(LOOKUP_SEP):
                 relationships = get_relationships(model_cls)
@@ -91,7 +146,6 @@ class QueryBuilder:
                 if attr in relationships:
                     relationship = relationships[attr]
                     joins = joins.setdefault("children", {})
-                    subquery_joins = subquery_joins.setdefault("children", {})
                     joins, model_cls = self._join(relationship, attr, joins)
                     expected = get_annotations(model_cls)
                 elif attr in columns:
@@ -105,6 +159,7 @@ class QueryBuilder:
             if column is None:
                 raise InvalidFilteringFieldError(filter_field)
             self._where[filter_field] = op(column, filter_value)
+        print(self._joins)
 
     def order_by(self, *args: str) -> None:
         for ordering_field in args:
@@ -130,7 +185,7 @@ class QueryBuilder:
                     raise InvalidOrderingFieldError(ordering_field)
             if column is None:
                 raise InvalidOrderingFieldError(ordering_field)
-            self._ordering[ordering_field] = column.desc() if ordering_field.startswith("-") else column.asc()
+            self._order_by[ordering_field] = column.desc() if ordering_field.startswith("-") else column.asc()
 
     def options(self, *args: str) -> None:
         for option_field in args:
@@ -147,7 +202,6 @@ class QueryBuilder:
                     relationships = get_relationships(model_cls)
                 else:
                     raise InvalidOptionFieldError(option_field)
-        print(self._options)
 
     def returning(self, *args: str, return_model: bool = False) -> None:
         # будет учтено только в UPDATE и DELETE запросах
@@ -256,56 +310,69 @@ class QueryBuilder:
     def _build_stmt_wo_options(self) -> Select:
         stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
         stmt = self._apply_execution_options(stmt)
-        stmt = self._apply_joins(stmt)
+        stmt = self._apply_joins_new(stmt)
         # важно сперва применить join-ы и только потом фильтровать и сортировать
         stmt = self._apply_where(stmt)
         stmt = self._apply_order_by(stmt)
         return stmt
 
     def _build_stmt_w_options(self) -> Select:
-        pk = get_pk(self._model_cls)
-        stmt = select(self._model_cls)
-        stmt = self._apply_execution_options(stmt)
-        stmt = self._apply_joins(stmt)
-        # важно сперва применить join-ы и только потом фильтровать и сортировать
-        stmt = self._apply_where(stmt)
-        subquery = select(func.distinct(pk))
-        subquery = self._apply_copied_joins(subquery)
-        subquery = self._apply_where(subquery)
-        subquery = self._apply_limit(subquery)
-        subquery = self._apply_offset(subquery)
-        stmt = stmt.where(pk.in_(subquery))
-        stmt = self._apply_order_by(stmt)
-        stmt = self._apply_options(stmt)
-        return stmt
+        """
+        Работает верно:
+        SELECT anon_1.id,
+               anon_1.name,
+               anon_1.status_id,
+               subsections.id        AS id_1,
+               subsections.name      AS name_1,
+               subsections.section_id,
+               subsections.status_id AS status_id_1
+        FROM (
+            SELECT DISTINCT sections.id AS id, sections.name AS name, sections.status_id AS status_id
+            FROM sections
+            LEFT JOIN subsections ON sections.id = subsections.section_id AND subsections.status_id = 1
+            LIMIT 10
+        ) AS anon_1
+        LEFT JOIN subsections ON anon_1.id = subsections.section_id AND subsections.status_id = 1
 
-    def _apply_copied_joins(self, stmt: Select) -> Select:
-        joins = deepcopy(self._joins)
-        return self._apply_joins(stmt, joins=joins)
+        Нужно:
+        1. создать подзапрос
+        """
+        if self._limit or self._offset:
+            # надо делать подзапрос
+            # жойны в подзапросе и внешнем запросе сохраняются
+            subquery = select(self._model_cls).distinct()
+            subquery = self._apply_limit(subquery)
+            subquery = self._apply_offset(subquery)
+            subquery = self._apply_where(subquery)
+            subquery = self._apply_joins_new(subquery, apply_order_by=False, apply_options=False)
+            SectionAlias = aliased(self._model_cls, subquery.subquery())
+            stmt = select(SectionAlias)
+            stmt = self._apply_joins_new(stmt, parent_model_cls=SectionAlias)
+        else:
+            # селектится все
+            # не нужно делать подзапрос
+            stmt = select(self._model_cls)
+            stmt = self._apply_joins_new(stmt)
+            stmt = self._apply_where(stmt)
+            stmt = self._apply_order_by(stmt)
+
+        return stmt
 
     def _apply_execution_options(self, stmt: Select) -> Select:
         return stmt.execution_options(**self._execution_options)
 
-    def _apply_options(self, stmt: Select) -> Select:
+    def _apply_options(self, stmt: Select, model_cls=None) -> Select:
         for relationship_names in self._flat_options(self._options):
-            joins = self._joins["children"]
             option = None
-            model_cls = self._model_cls
+            model_cls = self._model_cls if model_cls is None else model_cls
             for relationship_name in relationship_names:
-                relationship = get_relationship(model_cls, relationship_name)
-                class_attribute = relationship.class_attribute
-                if relationship_name in joins:
-                    option = (
-                        option.contains_eager(class_attribute)
-                        if option
-                        else contains_eager(class_attribute)
-                    )
-                else:
-                    option = (
-                        option.joinedload(class_attribute, innerjoin=True) if option else joinedload(class_attribute, innerjoin=True)
-                    )
-                joins = joins.get(relationship_name, {}).get("children", {})
-                model_cls = relationship.mapper.class_
+                onclause = getattr(model_cls, relationship_name)
+                option = (
+                    option.contains_eager(onclause)
+                    if option
+                    else contains_eager(onclause)
+                )
+                model_cls = onclause.property.mapper.class_
             stmt = stmt.options(option)
         return stmt
 
@@ -331,11 +398,24 @@ class QueryBuilder:
             stmt = stmt.limit(self._limit)
         return stmt
 
-    def _apply_where(self, stmt: Select) -> Select:
-        return stmt.where(*self._where.values())
+    def _apply_where(self, stmt: Select, where: dict = None, model_cls=None) -> Select:
+        model_cls = self._model_cls if model_cls is None else model_cls
+        where = self._where if where is None else where
+        for attr, value in where.items():
+            op = value['op']
+            column = getattr(model_cls, attr)  # напр., aliased(Section).name или Section.name
+            stmt = stmt.where(op(column, value['value']))
+        return stmt
 
-    def _apply_order_by(self, stmt: Select) -> Select:
-        return stmt.order_by(*self._ordering.values())
+    def _apply_order_by(self, stmt: Select, order_by: dict = None, model_cls=None) -> Select:
+        model_cls = self._model_cls if model_cls is None else model_cls
+        order_by = self._order_by if order_by is None else order_by
+        for attr, value in order_by.items():
+            direction = value['direction']
+            column = getattr(model_cls, attr)  # напр., aliased(Section).name или Section.name
+            column = column.asc() if direction == 'asc' else column.desc()
+            stmt = stmt.order_by(column)
+        return stmt
 
     def _apply_joins(self, stmt: Select, model_cls: Type[Model] = None, joins: dict = None) -> Select:
         model_cls = model_cls or self._model_cls
@@ -348,3 +428,179 @@ class QueryBuilder:
             stmt = stmt.join(target, onclause, isouter=isouter)
             stmt = self._apply_joins(stmt, relationship.mapper.class_, value)
         return stmt
+
+    def _apply_joins_new(
+            self,
+            stmt: Select,
+            apply_where: bool = True,
+            apply_order_by: bool = True,
+            apply_options: bool = True,
+            parent_model_cls=None
+    ) -> Select:
+        """
+        как сейчас:
+
+        {
+            'children': {
+                'subsections': {
+                    'target': < AliasedClass at 0x118c9c650;Subsection > ,
+                    'onclause': < sqlalchemy.orm.attributes.InstrumentedAttribute object at 0x118ba1260 > ,
+                    'children': {
+                        'status': {
+                            'target': < AliasedClass at 0x118cba790;PublicationStatus > ,
+                            'onclause': < sqlalchemy.orm.attributes.InstrumentedAttribute object at 0x118ba22a0 >
+                        }
+                    }
+                }
+            }
+        }
+
+        _where (к рут модели)
+        _order_by (к рут модели)
+
+        рут модель может быть обычной моделью или алиасом
+
+        join-ы:
+        {
+            "children": {
+                "subsections": {
+                    "model_cls": Subsection,
+                    "where": ['code', 'name'],
+                    "order_by": ['status_id'],
+                    "is_outer": False,
+                    "children": {
+                        "status": {
+                            'model_cls': PublicationStatus,
+                        }
+                    }
+                }
+            }
+        }
+        apply joins это про применение жойнов и связанных с ним фильтров и сортировок
+        но у основной модели свои фильтры и сортировки, которые применяются отдельно - и это должны быть строки,
+        тк внешней моделью может быть алиас, а не рут модель
+
+
+        """
+        parent_model_cls = self._model_cls if parent_model_cls is None else parent_model_cls
+        joins = self._joins
+        """
+        {
+            "children": {
+                "subsections": {
+                    "model_cls": aliased(Section),
+                    "children": {
+                        "status": {
+                            "model_cls": aliased(Subsection),
+                            "children": {
+                            
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
+
+        """
+        {
+            "children": {
+                "subsections": {
+                    "model_cls": Subsection,
+                    "where": {
+                        'name': {
+                            'op': eq,
+                            'value': "значение"
+                        }
+                    },
+                    "order_by": {
+                        'status_id': {
+                            'direction': 'asc'
+                        },
+                        'name': {
+                            'direction': 'desc'
+                        },
+                    },
+                    "is_outer": False,
+                    "children": {
+                        "status": {
+                            'model_cls': PublicationStatus,
+                            "where": {
+                                'code': {
+                                    'op': eq,
+                                    'value': "published"
+                                }
+                            },
+                        }
+                    }
+                },
+                "status": {
+                    "model_cls": PublicationStatus,
+                    "is_outer": False,
+                }
+            }
+        }
+        """
+        where = []
+        order_by = []
+        tree = {}
+        def recursive(stmt, joins, where, order_by, parent_model_cls, tree, root):
+            for attr, value in joins.get("children", {}).items():
+                target = aliased(value["model_cls"])
+                onclause = getattr(parent_model_cls, attr)
+                attr_root = f"{root}__{attr}".strip("__")
+                tree[attr_root] = {"attr": onclause, "alias": target}
+                isouter = value.get("is_outer", False)
+                stmt = stmt.join(target, onclause, isouter=isouter)
+                for name, item in value.get("where", {}).items():
+                    op = item["op"]
+                    column = getattr(target, name)
+                    where.append(op(column, item["value"]))
+                for name, item in value.get("order_by", {}).items():
+                    direction = item["direction"]
+                    column = getattr(target, name)
+                    order_by.append(column.asc() if direction == 'asc' else column.desc())
+                stmt = recursive(
+                    stmt,
+                    joins=value,
+                    order_by=order_by,
+                    where=where,
+                    parent_model_cls=target,
+                    tree=tree,
+                    root=attr_root
+                )
+            return stmt
+
+        stmt = recursive(
+            stmt=stmt, joins=joins, where=where, order_by=order_by, parent_model_cls=parent_model_cls, tree=tree,
+            root=""
+        )
+        print(stmt)
+        print(order_by)
+        print(where)
+        print(tree)
+        if apply_where:
+            stmt = stmt.where(*where)
+        if apply_order_by:
+            stmt = stmt.order_by(*order_by)
+        if apply_options:
+            options = self._get_options(tree)
+            stmt = stmt.options(*options)
+        return stmt
+
+    def _get_options(self, tree):
+        options = []
+        for option_field in self._options:
+            option = None
+            parts = option_field.split('__')
+            result = []
+            for i in range(1, len(parts) + 1):
+                result.append('__'.join(parts[:i]))
+            for attr in result:
+                data = tree[attr]
+                if option:
+                    option = option.contains_eager(attr=data["attr"], alias=data["alias"])
+                else:
+                    option = contains_eager(data["attr"].of_type(data["alias"]))
+            options.append(option)
+        return options
