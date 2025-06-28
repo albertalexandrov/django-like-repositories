@@ -77,7 +77,7 @@ async def test(
         .filter(subsections__status__id=1)
         # .filter(subsections__status__id=2)
         # .filter(subsections__id=None)
-        # .filter(status__code='dcsd')
+        # .filter(status__code=)
         # .filter(status_id=1)
         # .values_list('id', 'name')
         # .order_by('id')
@@ -85,7 +85,7 @@ async def test(
         # .order_by('-subsections__status__code')
         # .outerjoin("subsections__status")
         # .outerjoin("subsections")
-        # .limit(2)
+        .limit(2)
         # .options("subsections")
         # .options("subsections__status")
         # .options("subsections__status")
@@ -95,6 +95,7 @@ async def test(
     r = await queryset.distinct().all()
     # r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
     # print(r.scalars().all())
+
     return r
 
 

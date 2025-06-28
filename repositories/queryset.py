@@ -117,7 +117,10 @@ class QuerySet:
     async def all(self) -> list[Any]:
         stmt = self._query_builder.build_select_stmt()
         result = await self._session.execute(stmt)
-        return self._iterable_result_func(result)
+        # SQLAlchemy требует вызвать метод unique
+        # The unique() method must be invoked on this Result, as it contains results
+        # that include joined eager loads against collections
+        return self._iterable_result_func(result.unique())
 
     async def first(self) -> Model | None:
         stmt = self.limit(1)._query_builder.build_select_stmt()
