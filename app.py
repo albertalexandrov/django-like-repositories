@@ -74,7 +74,7 @@ async def test(
     queryset = (
         repository
         .objects
-        .filter(subsections__status__id=1)
+        # .filter(subsections__status__id__in=[1, 2])
         # .filter(subsections__status__id=2)
         # .filter(subsections__id=None)
         # .filter(status__code=)
@@ -86,13 +86,13 @@ async def test(
         # .outerjoin("subsections__status")
         # .outerjoin("subsections")
         .limit(2)
-        # .options("subsections")
+        .options("subsections")
         # .options("subsections__status")
         # .options("subsections__status")
         # .returning('id', 'name')
         # .execution_options(populate_existing=True)
     )
-    r = await queryset.distinct().all()
+    r = await queryset.all()
     # r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
     # print(r.scalars().all())
 

@@ -170,8 +170,6 @@ class QueryBuilder:
             if not column_name:
                 raise InvalidFilterFieldError(filter_field)
             where[column_name] = {"op": op, "value": filter_value}
-        print(self._joins)
-        print(self._where)
 
     def order_by(self, *args: str) -> None:
         for ordering_field in args:
@@ -206,8 +204,6 @@ class QueryBuilder:
             order_by[column_name] = {
                 "direction": "desc" if ordering_field.startswith("-") else "asc"
             }
-        print(self._order_by)
-        print(self._joins)
 
     def options(self, *args: str) -> None:
         for option_field in args:
@@ -261,7 +257,6 @@ class QueryBuilder:
                 else:
                     raise InvalidJoinFieldError(join_field)
             joins["isouter"] = isouter
-        print(self._joins)
 
     def distinct(self) -> None:
         self._distinct = True
@@ -277,6 +272,8 @@ class QueryBuilder:
         self._offset = offset
 
     def build_count_stmt(self) -> Select:
+        if self._options:
+            raise ValueError("Удалите options")
         pk = get_pk(self._model_cls)
         stmt = (
             select(func.count(func.distinct(pk)))
@@ -286,12 +283,9 @@ class QueryBuilder:
         stmt = self._apply_where(stmt)
         return stmt
 
-    def build_select_stmt(self) -> Select:
-        if self._options:
-            return self._build_stmt_w_options()
-        return self._build_stmt_wo_options()
-
     def build_delete_stmt(self) -> Delete:
+        if self._options:
+            raise ValueError("Удалите options")
         pk = get_pk(self._model_cls)
         stmt = select(func.distinct(pk))
         stmt = self._apply_execution_options(stmt)
@@ -302,6 +296,8 @@ class QueryBuilder:
         return stmt
 
     def build_update_stmt(self, values: dict[str, Any]) -> Update:
+        if self._options:
+            raise ValueError("Удалите options")
         pk = get_pk(self._model_cls)
         stmt = select(func.distinct(pk))
         stmt = self._apply_execution_options(stmt)
@@ -321,18 +317,7 @@ class QueryBuilder:
             stmt = stmt.distinct()
         return stmt
 
-    def _build_stmt_wo_options(self) -> Select:
-        stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
-        stmt = self._apply_distinct(stmt)
-        stmt = self._apply_execution_options(stmt)
-        stmt = self._apply_joins(stmt)
-        stmt = self._apply_where(stmt)
-        stmt = self._apply_order_by(stmt)
-        stmt = self._apply_limit(stmt)
-        stmt = self._apply_offset(stmt)
-        return stmt
-
-    def _build_stmt_w_options(self) -> Select:
+    def build_select_stmt(self) -> Select:
         """
         Работает верно:
         SELECT anon_1.id,
@@ -353,29 +338,33 @@ class QueryBuilder:
         Нужно:
         1. создать подзапрос
         """
-        if self._limit or self._offset:
+        if self._options and self._values_list:
+            raise ValueError("Одновременно заданные options и values_list не могут быть обработаны вместе")
+        if self._options and (self._limit or self._offset):
             # надо делать подзапрос
             # жойны в подзапросе и внешнем запросе сохраняются
             subquery = select(self._model_cls)
-            subquery = self._apply_distinct(subquery)
+            subquery = subquery.distinct()
             subquery = self._apply_limit(subquery)
             subquery = self._apply_offset(subquery)
             subquery = self._apply_where(subquery)
             subquery = self._apply_order_by(subquery)
             subquery = self._apply_joins(subquery, apply_options=False)
-            SectionAlias = aliased(self._model_cls, subquery.subquery())
-            stmt = select(SectionAlias)
+            AliasedModelCls = aliased(self._model_cls, subquery.subquery())
+            stmt = select(AliasedModelCls)
             stmt = self._apply_distinct(stmt)
-            stmt = self._apply_joins(stmt, parent_model_cls=SectionAlias)
+            stmt = self._apply_joins(stmt, parent_model_cls=AliasedModelCls)
         else:
             # селектится все
             # не нужно делать подзапрос
-            stmt = select(self._model_cls)
+            stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
+            stmt = self._apply_execution_options(stmt)
             stmt = self._apply_distinct(stmt)
             stmt = self._apply_joins(stmt)
             stmt = self._apply_where(stmt)
             stmt = self._apply_order_by(stmt)
-
+            stmt = self._apply_limit(stmt)
+            stmt = self._apply_offset(stmt)
         return stmt
 
     def _apply_execution_options(self, stmt: Select) -> Select:
@@ -537,8 +526,7 @@ class QueryBuilder:
         if apply_order_by:
             stmt = stmt.order_by(*order_by)
         if apply_options:
-            options = self._get_options(tree)
-            stmt = stmt.options(*options)
+            stmt = self._apply_options(stmt, tree)
         return stmt
 
     def _apply_joins_recursively(self, stmt, joins, where, order_by, parent_model_cls, tree, root):
@@ -568,19 +556,18 @@ class QueryBuilder:
             )
         return stmt
 
-    def _get_options(self, tree):
-        options = []
+    def _apply_options(self, stmt: Select, tree: dict) -> Select:
         for option_field in self._options:
             option = None
-            parts = option_field.split('__')
-            result = []
-            for i in range(1, len(parts) + 1):
-                result.append('__'.join(parts[:i]))
-            for attr in result:
+            attrs = option_field.split(LOOKUP_SEP)
+            keys = []
+            for i in range(1, len(attrs) + 1):
+                keys.append(LOOKUP_SEP.join(attrs[:i]))
+            for attr in keys:
                 data = tree[attr]
                 if option:
                     option = option.contains_eager(attr=data["attr"], alias=data["alias"])
                 else:
                     option = contains_eager(data["attr"].of_type(data["alias"]))
-            options.append(option)
-        return options
+            stmt = stmt.options(option)
+        return stmt
