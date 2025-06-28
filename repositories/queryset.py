@@ -65,9 +65,14 @@ class QuerySet:
         clone._query_builder.options(*args)
         return clone
 
+    def innerjoin(self, *args: str) -> Self:
+        clone = self._clone()
+        clone._query_builder.join(*args, isouter=False)
+        return clone
+
     def outerjoin(self, *args: str) -> Self:
         clone = self._clone()
-        clone._query_builder.outerjoin(*args)
+        clone._query_builder.join(*args, isouter=True)
         return clone
 
     def execution_options(self, **kw: dict[str:Any]) -> Self:
@@ -94,20 +99,25 @@ class QuerySet:
         )
         return clone
 
-    def limit(self, limit: int) -> Self:
+    def limit(self, limit: int | None) -> Self:
         clone = self._clone()
         clone._query_builder.limit(limit)
         return clone
 
-    def offset(self, offset: int) -> Self:
+    def offset(self, offset: int | None) -> Self:
         clone = self._clone()
         clone._query_builder.offset(offset)
+        return clone
+
+    def distinct(self):
+        clone = self._clone()
+        clone._query_builder.distinct()
         return clone
 
     async def all(self) -> list[Any]:
         stmt = self._query_builder.build_select_stmt()
         result = await self._session.execute(stmt)
-        return self._iterable_result_func(result.unique())
+        return self._iterable_result_func(result)
 
     async def first(self) -> Model | None:
         stmt = self.limit(1)._query_builder.build_select_stmt()

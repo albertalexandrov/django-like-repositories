@@ -2,10 +2,9 @@ import logging
 from typing import Any, Type, Self
 
 from sqlalchemy import Select, select, func, delete, Delete, update, Update
-from sqlalchemy.orm import contains_eager, joinedload, aliased
+from sqlalchemy.orm import contains_eager, aliased
 from sqlalchemy.sql.operators import eq
 
-from models import Section, Subsection, PublicationStatus
 from repositories.constants import LOOKUP_SEP
 from repositories.lookups import lookups
 from repositories.types import Model
@@ -14,14 +13,14 @@ from repositories.utils import get_column, get_relationship, get_pk, get_relatio
 logger = logging.getLogger(__name__)
 
 
-class InvalidFilteringFieldError(Exception):
+class InvalidFilterFieldError(Exception):
 
     def __init__(self, filter_field: str):
         error = f"Некорректное поле для фильтрации - {filter_field}"
         super().__init__(error)
 
 
-class InvalidOrderingFieldError(Exception):
+class InvalidOrderByFieldError(Exception):
 
     def __init__(self, ordering_field: str):
         error = f"Некорректное поле для сортировки - {ordering_field}"
@@ -62,59 +61,63 @@ class QueryBuilder:
 
     def __init__(self, model_cls: Type[Model]):
         self._model_cls = model_cls
-        self._where = {'name': {'op': eq, 'value': "значение"}}
-        self._joins = {
-            "children": {
-                "subsections": {
-                    "model_cls": Subsection,
-                    "where": {
-                        'name': {
-                            'op': eq,
-                            'value': "значение"
-                        }
-                    },
-                    "order_by": {
-                        'status_id': {
-                            'direction': 'asc'
-                        },
-                        'name': {
-                            'direction': 'desc'
-                        },
-                    },
-                    "is_outer": False,
-                    "children": {
-                        "status": {
-                            'model_cls': PublicationStatus,
-                            "where": {
-                                'code': {
-                                    'op': eq,
-                                    'value': "published"
-                                }
-                            },
-                        }
-                    }
-                },
-                "status": {
-                    "model_cls": PublicationStatus,
-                    "is_outer": False,
-                }
-            }
-        }
-        self._options = ["subsections__status", "status"]  # {"subsections": {"status": {}}, "status": {}}
-        self._order_by = {
-            'status_id': {
-                'direction': 'asc'
-            },
-            'name': {
-                'direction': 'desc'
-            },
-        }
+        self._where = {}
+        # self._where = {'name': {'op': eq, 'value': "значение"}}
+        self._joins = {}
+        # self._joins = {
+        #     "children": {
+        #         "subsections": {
+        #             "model_cls": Subsection,
+        #             "where": {
+        #                 'name': {
+        #                     'op': eq,
+        #                     'value': "значение"
+        #                 }
+        #             },
+        #             "order_by": {
+        #                 'status_id': {
+        #                     'direction': 'asc'
+        #                 },
+        #                 'name': {
+        #                     'direction': 'desc'
+        #                 },
+        #             },
+        #             "is_outer": False,
+        #             "children": {
+        #                 "status": {
+        #                     'model_cls': PublicationStatus,
+        #                     "where": {
+        #                         'code': {
+        #                             'op': eq,
+        #                             'value': "published"
+        #                         }
+        #                     },
+        #                 }
+        #             }
+        #         },
+        #         "status": {
+        #             "model_cls": PublicationStatus,
+        #             "is_outer": False,
+        #         }
+        #     }
+        # }
+        # self._options = ["subsections__status", "status"]  # {"subsections": {"status": {}}, "status": {}}
+        self._options = set()
+        self._order_by = {}
+        # self._order_by = {
+        #     'status_id': {
+        #         'direction': 'asc'
+        #     },
+        #     'name': {
+        #         'direction': 'desc'
+        #     },
+        # }
         self._limit = None
         self._offset = None
         self._returning = []
         self._execution_options = {}
         self._values_list = []
-        self._last_options = {}
+        self.__distinct = False
 
     def clone(self) -> Self:
         """
@@ -124,7 +127,7 @@ class QueryBuilder:
         clone._where = {**self._where}
         clone._order_by = {**self._order_by}
         clone._joins = {**self._joins}
-        clone._options = [*self._options]
+        clone._options = {*self._options}
         clone._returning = [*self._returning]
         clone._execution_options = {**self._execution_options}
         clone._values_list = [*self._values_list]
@@ -135,73 +138,90 @@ class QueryBuilder:
     def filter(self, **kw: dict[str:Any]) -> None:
         for filter_field, filter_value in kw.items():
             model_cls = self._model_cls
-            column, op = None, eq
+            column_name, op = None, eq
             joins = self._joins
             expected = get_annotations(model_cls)
+            where = self._where
+            column_name = filter_field
             for attr in filter_field.split(LOOKUP_SEP):
                 relationships = get_relationships(model_cls)
                 columns = get_columns(model_cls)
                 if attr not in expected:
-                    raise InvalidFilteringFieldError(filter_field)
+                    raise InvalidFilterFieldError(filter_field)
                 if attr in relationships:
-                    relationship = relationships[attr]
-                    joins = joins.setdefault("children", {})
-                    joins, model_cls = self._join(relationship, attr, joins)
+                    model_cls = getattr(model_cls, attr).property.mapper.class_
+                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    joins['model_cls'] = model_cls
+                    if "where" in joins:
+                        where = joins["where"]
+                    else:
+                        joins["where"] = {}
+                        where = joins["where"]
                     expected = get_annotations(model_cls)
                 elif attr in columns:
-                    column = getattr(model_cls, attr)
+                    column_name = attr
                     expected = lookups
                 elif attr in lookups:
                     op = lookups[attr]
                     expected = {}
                 else:
-                    raise InvalidFilteringFieldError(filter_field)
-            if column is None:
-                raise InvalidFilteringFieldError(filter_field)
-            self._where[filter_field] = op(column, filter_value)
+                    raise InvalidFilterFieldError(filter_field)
+            if not column_name:
+                raise InvalidFilterFieldError(filter_field)
+            where[column_name] = {"op": op, "value": filter_value}
         print(self._joins)
+        print(self._where)
 
     def order_by(self, *args: str) -> None:
         for ordering_field in args:
             model_cls = self._model_cls
             joins = self._joins
-            column = None
+            column_name = None
+            order_by = self._order_by
             ordering_field = ordering_field.strip("+")
             expected = get_annotations(model_cls)
             for attr in ordering_field.strip("-").split(LOOKUP_SEP):
                 relationships = get_relationships(model_cls)
                 columns = get_columns(model_cls)
                 if attr not in expected:
-                    raise InvalidOrderingFieldError(ordering_field)
+                    raise InvalidOrderByFieldError(ordering_field)
                 if attr in relationships:
-                    relationship = relationships[attr]
-                    joins = joins.setdefault("children", {})
-                    joins, model_cls = self._join(relationship, attr, joins)
+                    model_cls = getattr(model_cls, attr).property.mapper.class_
+                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    joins['model_cls'] = model_cls
+                    if "order_by" in joins:
+                        order_by = joins["order_by"]
+                    else:
+                        joins["order_by"] = {}
+                        order_by = joins["order_by"]
                     expected = get_annotations(model_cls)
                 elif attr in columns:
-                    column = getattr(model_cls, attr)
+                    column_name = attr
                     expected = {}
                 else:
-                    raise InvalidOrderingFieldError(ordering_field)
-            if column is None:
-                raise InvalidOrderingFieldError(ordering_field)
-            self._order_by[ordering_field] = column.desc() if ordering_field.startswith("-") else column.asc()
+                    raise InvalidOrderByFieldError(ordering_field)
+            if column_name is None:
+                raise InvalidOrderByFieldError(ordering_field)
+            order_by[column_name] = {
+                "direction": "desc" if ordering_field.startswith("-") else "asc"
+            }
+        print(self._order_by)
+        print(self._joins)
 
     def options(self, *args: str) -> None:
         for option_field in args:
             model_cls = self._model_cls
-            options = self._options
             joins = self._joins
             relationships = get_relationships(model_cls)
             for attr in option_field.split(LOOKUP_SEP):
                 if attr in relationships:
-                    relationship = relationships[attr]
-                    options = options.setdefault(attr, {})
-                    joins = joins.setdefault("children", {})
-                    joins, model_cls = self._join(relationship, attr, joins)
+                    model_cls = getattr(model_cls, attr).property.mapper.class_
+                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    joins['model_cls'] = model_cls
                     relationships = get_relationships(model_cls)
                 else:
                     raise InvalidOptionFieldError(option_field)
+            self._options.add(option_field)
 
     def returning(self, *args: str, return_model: bool = False) -> None:
         # будет учтено только в UPDATE и DELETE запросах
@@ -226,23 +246,24 @@ class QueryBuilder:
             column = get_column(self._model_cls, column_name)
             self._values_list.append(column)
 
-    def outerjoin(self, *args: str) -> None:
+    def join(self, *args: str, isouter: bool) -> None:
         for join_field in args:
             model_cls = self._model_cls
             joins = self._joins
-            penultimate_joins, last_attr = None, None
             relationships = get_relationships(model_cls)
             for attr in join_field.split(LOOKUP_SEP):
                 if attr in relationships:
-                    last_attr = attr
-                    relationship = relationships[attr]
-                    joins = joins.setdefault("children", {})
-                    penultimate_joins = joins
-                    joins, model_cls = self._join(relationship, attr, joins)
+                    model_cls = getattr(model_cls, attr).property.mapper.class_
+                    joins = joins.setdefault("children", {}).setdefault(attr, {})
+                    joins['model_cls'] = model_cls
                     relationships = get_relationships(model_cls)
                 else:
                     raise InvalidJoinFieldError(join_field)
-            penultimate_joins[last_attr]["isouter"] = True
+            joins["isouter"] = isouter
+        print(self._joins)
+
+    def distinct(self) -> None:
+        self.__distinct = True
 
     def limit(self, limit: int | None) -> None:
         if limit < 1:
@@ -260,9 +281,8 @@ class QueryBuilder:
             select(func.count(func.distinct(pk)))
             .select_from(self._model_cls)
         )
-        stmt = self._apply_joins(stmt)
-        # важно сперва применить join-ы и только потом фильтровать
-        stmt = self._apply_where(stmt)
+        stmt = self._apply_joins_new(stmt)
+        stmt = self._apply_where_new(stmt)
         return stmt
 
     def build_select_stmt(self) -> Select:
@@ -276,24 +296,30 @@ class QueryBuilder:
         pk = get_pk(self._model_cls)
         stmt = select(func.distinct(pk))
         stmt = self._apply_execution_options(stmt)
-        stmt = self._apply_joins(stmt)
-        # важно сперва применить join-ы и только потом фильтровать
-        stmt = self._apply_where(stmt)
+        stmt = self._apply_joins_new(stmt)
+        stmt = self._apply_where_new(stmt)
         stmt = delete(self._model_cls).where(pk.in_(stmt))
-        if self._returning:
-            stmt = stmt.returning(*self._returning)
+        stmt = self._apply_returning(stmt)
         return stmt
 
     def build_update_stmt(self, values: dict[str, Any]) -> Update:
         pk = get_pk(self._model_cls)
         stmt = select(func.distinct(pk))
         stmt = self._apply_execution_options(stmt)
-        stmt = self._apply_joins(stmt)
-        # важно сперва применить join-ы и только потом фильтровать
-        stmt = self._apply_where(stmt)
+        stmt = self._apply_joins_new(stmt)
+        stmt = self._apply_where_new(stmt)
         stmt = update(self._model_cls).where(pk.in_(stmt)).values(**values)
+        stmt = self._apply_returning(stmt)
+        return stmt
+
+    def _apply_returning(self, stmt: Update | Delete) -> Update | Delete:
         if self._returning:
             stmt = stmt.returning(*self._returning)
+        return stmt
+
+    def _apply_distinct(self, stmt):
+        if self.__distinct:
+            stmt = stmt.distinct()
         return stmt
 
     def _join(self, relationship, attr: str, joins: dict[str, Any]) -> tuple[dict, Model]:
@@ -309,11 +335,11 @@ class QueryBuilder:
 
     def _build_stmt_wo_options(self) -> Select:
         stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
+        stmt = self._apply_distinct(stmt)
         stmt = self._apply_execution_options(stmt)
         stmt = self._apply_joins_new(stmt)
-        # важно сперва применить join-ы и только потом фильтровать и сортировать
-        stmt = self._apply_where(stmt)
-        stmt = self._apply_order_by(stmt)
+        stmt = self._apply_where_new(stmt)
+        stmt = self._apply_order_by_new(stmt)
         return stmt
 
     def _build_stmt_w_options(self) -> Select:
@@ -340,18 +366,22 @@ class QueryBuilder:
         if self._limit or self._offset:
             # надо делать подзапрос
             # жойны в подзапросе и внешнем запросе сохраняются
-            subquery = select(self._model_cls).distinct()
+            subquery = select(self._model_cls)
+            subquery = self._apply_distinct(subquery)
             subquery = self._apply_limit(subquery)
             subquery = self._apply_offset(subquery)
-            subquery = self._apply_where(subquery)
-            subquery = self._apply_joins_new(subquery, apply_order_by=False, apply_options=False)
+            subquery = self._apply_where_new(subquery)
+            subquery = self._apply_order_by_new(subquery)
+            subquery = self._apply_joins_new(subquery, apply_options=False)
             SectionAlias = aliased(self._model_cls, subquery.subquery())
             stmt = select(SectionAlias)
+            stmt = self._apply_distinct(stmt)
             stmt = self._apply_joins_new(stmt, parent_model_cls=SectionAlias)
         else:
             # селектится все
             # не нужно делать подзапрос
             stmt = select(self._model_cls)
+            stmt = self._apply_distinct(stmt)
             stmt = self._apply_joins_new(stmt)
             stmt = self._apply_where(stmt)
             stmt = self._apply_order_by(stmt)
@@ -407,10 +437,27 @@ class QueryBuilder:
             stmt = stmt.where(op(column, value['value']))
         return stmt
 
+    def _apply_where_new(self, stmt, model_cls=None) -> Select:
+        model_cls = model_cls or self._model_cls
+        for attr, value in self._where.items():
+            op = value['op']
+            column = getattr(model_cls, attr)
+            stmt = stmt.where(op(column, value['value']))
+        return stmt
+
     def _apply_order_by(self, stmt: Select, order_by: dict = None, model_cls=None) -> Select:
         model_cls = self._model_cls if model_cls is None else model_cls
         order_by = self._order_by if order_by is None else order_by
         for attr, value in order_by.items():
+            direction = value['direction']
+            column = getattr(model_cls, attr)  # напр., aliased(Section).name или Section.name
+            column = column.asc() if direction == 'asc' else column.desc()
+            stmt = stmt.order_by(column)
+        return stmt
+
+    def _apply_order_by_new(self, stmt: Select, model_cls=None):
+        model_cls = model_cls or self._model_cls
+        for attr, value in self._order_by.items():
             direction = value['direction']
             column = getattr(model_cls, attr)  # напр., aliased(Section).name или Section.name
             column = column.asc() if direction == 'asc' else column.desc()
@@ -550,7 +597,7 @@ class QueryBuilder:
                 onclause = getattr(parent_model_cls, attr)
                 attr_root = f"{root}__{attr}".strip("__")
                 tree[attr_root] = {"attr": onclause, "alias": target}
-                isouter = value.get("is_outer", False)
+                isouter = value.get("isouter", False)
                 stmt = stmt.join(target, onclause, isouter=isouter)
                 for name, item in value.get("where", {}).items():
                     op = item["op"]
@@ -583,7 +630,7 @@ class QueryBuilder:
             stmt = stmt.where(*where)
         if apply_order_by:
             stmt = stmt.order_by(*order_by)
-        if apply_options:
+        if apply_options and self._options:
             options = self._get_options(tree)
             stmt = stmt.options(*options)
         return stmt
