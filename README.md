@@ -112,67 +112,81 @@ class SectionRepository(BaseRepository):
 Плюс-минус стандартный:
 
 ```python
-from typing import TypeVar, Generic, Any
+from itertools import islice
+from typing import Generic, Any, Type, Self
 
 from fastapi.params import Depends
-from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
 from repositories.queryset import QuerySet
-
-Model = TypeVar("Model")
+from repositories.types import Model
 
 
 class BaseRepository(Generic[Model]):
-    model: Model = None
+    model_cls: Type[Model] = None
 
     def __init__(self, session: AsyncSession = Depends(get_session)):
+        if not self.model_cls:
+            raise ValueError("Не задана модель в атрибуте `model_cls`")
         self._session = session
+        self._flush = None
+        self._commit = None
 
-    async def create(self, values: dict, flush: bool = True, commit: bool = False) -> Model:
-        instance = self.model(**values)
-        self._session.add(instance)
-        if flush and not commit:
-            await self._session.flush(instance)
-        elif commit:
+    def _clone(self) -> Self:
+        clone = self.__class__(session=self._session)
+        clone._flush = self._flush
+        clone._commit = self._commit
+        return clone
+
+    def flush(self, flush: bool = True, /) -> Self:
+        clone = self._clone()
+        clone._flush = flush
+        return clone
+
+    def commit(self, commit: bool = True, /) -> Self:
+        clone = self._clone()
+        clone._commit = commit
+        return clone
+
+    async def _flush_commit_reset(self, *objs: Model) -> None:
+        if self._flush and not self._commit and objs:
+            await self._session.flush(objs)
+        elif self._commit:
             await self._session.commit()
-        return instance
+        self._flush = None
+        self._commit = None
 
-    async def bulk_create(self, values: list[dict], flush: bool = True, commit: bool = False) -> list[Model]:
+    async def create(self, **kw: dict[str:Any]) -> Model:
+        obj = self.model_cls(**kw)
+        self._session.add(obj)
+        await self._flush_commit_reset(obj)
+        return obj
+
+    async def bulk_create(self, values: list[dict], batch_size: int = None) -> list[Model]:
+        if batch_size is not None and (not isinstance(batch_size, int) or batch_size <= 0):
+            raise ValueError("batch_size должен быть целым положительным числом")
         objs = []
-        for item in values:
-            obj = self.model(**item)
-            objs.append(obj)
-        if flush and not commit:
-            await self._session.flush(*objs)
-        elif commit:
-            await self._session.commit()
+        if batch_size:
+            it = iter(values)
+            while batch := list(islice(it, batch_size)):
+                batch_objs = [self.model_cls(**item) for item in batch]
+                await self._flush_commit_reset(*batch_objs)
+                objs.extend(batch_objs)
+        else:
+            for item in values:
+                obj = self.model_cls(**item)
+                objs.append(obj)
+            await self._flush_commit_reset(objs)
         return objs
 
-    # методы с ограниченной функциональностью
-
-    async def all(self) -> list[Model]:
-        stmt = select(self.model)
-        result = await self._session.scalars(stmt)
-        return result.all()  # noqa
-
     async def get_by_pk(self, pk: Any) -> Model:
-        return await self._session.get(self.model, pk)
-
-    async def delete(self) -> None:
-        stmt = delete(self.model)
-        await self._session.execute(stmt)
-        
-    async def first(self) -> Model | None:
-        stmt = select(self.model).limit(1)
-        return await self._session.scalar(stmt)
-
-    # возможно какие то другие методы с ограниченной фунциональностью (получение списка, напр.) - накидывайте
+        return await self._session.get(self.model_cls, pk)
 
     @property
     def objects(self) -> QuerySet:
-        return QuerySet(self.model, self._session)
+        return QuerySet(self.model_cls, self._session)
+
 ```
 
 Рассмотрим класс `QuerySet`.
@@ -181,309 +195,247 @@ class BaseRepository(Generic[Model]):
 
 Поделка на QuerySet Django с некоторыми особенностями SQLAlchemy.
 
-Пример использования:
+Данный класс принимает параметры запроса при помощи промежуточныех методов и транслирует их в QueryBuilder, 
+а также выполняет запросы в БД
+
+### Промежуточные и терминальные методы
+
+Класс содержит методы, которые деляться на два типа:
+- промежуточные и
+- терминальные.
+
+Промежуточные методы - `filter()`, `order_by()`, `returning()`, `innerjoin()`, `outerjoin()`, `options()`,
+`execution_options()`, `values_list()`, `distinct()`, `flush()`, `commit()`) - не выполняют запросов в БД, а
+предназначены для того, чтобы принимать параметры запроса (параметры фильтрации, сортировки и тд)
+Промежуточные методы возвращают копию QuerySet.
+
+Терминальные методы - `first()`, `count()`, `get_one_or_none()`, `delete()`, `update()`, `exists()`, `in_bulk()`,
+`update_or_create()`, `get_or_create()` - соответственно, выполняют запросы в БД.
+
+### Вычисление QuerySet
+
+Вычисляется QuerySet простым await-ом:
 
 ```python
-repository = SectionRepository(session)
-queryset = (
-    repository
-    .objects
-    .filter(name__icontains='управление')
-    .filter(status__code='unpublished')
-    .order_by('id')
-    .options("status")
-)
-result = await queryset.all()
+qs = some_repository.object.filter(status_code="published")
+result = await qs
 ```
 
-## Класс QuerySet
+### Срезы
 
-P.S. На момент написания этих строк реализованы `select`-методы `all`, `first`.
+Лимитировать QuerySet можно при помощи срезов (шаг среза не поддерживается).  Для этого необходимо
+передать срез:
 
 ```python
-from copy import deepcopy
-from typing import Self
-
-from fastapi_filter.contrib.sqlalchemy import Filter
-from sqlalchemy import select, extract, inspect, Select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, contains_eager
-from sqlalchemy.sql import operators
-
-
-class QuerySet:
-    _operators = {
-        "in": operators.in_op,
-        "isnull": lambda c, v: (c == None) if v else (c != None),
-        "exact": operators.eq,
-        "eq": operators.eq,
-        "ne": operators.ne,
-        "gt": operators.gt,
-        "ge": operators.ge,
-        "lt": operators.lt,
-        "le": operators.le,
-        "notin": operators.notin_op,
-        "between": lambda c, v: c.between(v[0], v[1]),
-        "like": operators.like_op,
-        "ilike": operators.ilike_op,
-        "startswith": operators.startswith_op,
-        "istartswith": lambda c, v: c.ilike(v + "%"),
-        "endswith": operators.endswith_op,
-        "iendswith": lambda c, v: c.ilike("%" + v),
-        "contains": lambda c, v: c.like(f"%{v}%"),
-        "icontains": lambda c, v: c.ilike(f"%{v}%"),
-        "year": lambda c, v: extract("year", c) == v,
-        "year_ne": lambda c, v: extract("year", c) != v,
-        "year_gt": lambda c, v: extract("year", c) > v,
-        "year_ge": lambda c, v: extract("year", c) >= v,
-        "year_lt": lambda c, v: extract("year", c) < v,
-        "year_le": lambda c, v: extract("year", c) <= v,
-        "month": lambda c, v: extract("month", c) == v,
-        "month_ne": lambda c, v: extract("month", c) != v,
-        "month_gt": lambda c, v: extract("month", c) > v,
-        "month_ge": lambda c, v: extract("month", c) >= v,
-        "month_lt": lambda c, v: extract("month", c) < v,
-        "month_le": lambda c, v: extract("month", c) <= v,
-        "day": lambda c, v: extract("day", c) == v,
-        "day_ne": lambda c, v: extract("day", c) != v,
-        "day_gt": lambda c, v: extract("day", c) > v,
-        "day_ge": lambda c, v: extract("day", c) >= v,
-        "day_lt": lambda c, v: extract("day", c) < v,
-        "day_le": lambda c, v: extract("day", c) <= v,
-    }
-
-    def __init__(self, model, session: AsyncSession):
-        self._model = model
-        self._session = session
-        self._stmt = select(self._model)
-        self._options = {}
-        self._where = set()
-        self._joins = {}
-        self._ordering_fields = set()
-        self._limit = None
-        self._offset = None
-
-    def _clone(self):
-        clone = self.__class__(self._model, self._session)
-        clone._model = self._model
-        clone._session = self._session
-        clone._stmt = self._stmt
-        clone._options = self._options
-        clone._where = self._where
-        clone._joins = self._joins
-        clone._ordering_fields = self._ordering_fields
-        clone._limit = self._limit
-        clone._offset = self._offset
-        return clone
-
-    def filter(self, *, filtering: Filter = None, **filters) -> Self:
-        # todo: применить filtering
-        obj = self._clone()
-        for field, value in filters.items():
-            model = obj._model
-            column, op = None, operators.eq
-            joins = obj._joins
-            for attr in field.split("__"):
-                if mapped := getattr(model, attr, None):
-                    relationships = inspect(model).relationships
-                    if attr in relationships:
-                        relationship = relationships[attr].class_attribute
-                        joins = joins.setdefault(relationship, {})
-                        model = relationships[attr].mapper.class_
-                    column = mapped
-                else:
-                    op = obj._operators[attr]
-            obj._where.add(op(column, value))
-        return obj
-
-    def options(self, *fields: str) -> Self:
-        # todo: обработать отсутствие связи
-        obj = self._clone()
-        for field in fields:
-            model = obj._model
-            options = obj._options
-            joins = obj._joins
-            for attr in field.split("__"):
-                relationships = inspect(model).relationships
-                relationship = relationships[attr].class_attribute
-                options = options.setdefault(relationship, {})
-                joins = joins.setdefault(relationship, {})
-                model = relationships[attr].mapper.class_
-        return obj
-
-    def order_by(self, *fields: str) -> Self:
-        # todo: обработать одни и повторяющиеся поля
-        obj = self._clone()
-        for field in fields:
-            model = obj._model
-            column = None
-            joins = obj._joins
-            for attr in field.lstrip("-+").split("__"):
-                relationships = inspect(model).relationships
-                if attr in relationships:
-                    relationship = relationships[attr].class_attribute
-                    joins = joins.setdefault(relationship, {})
-                    model = relationships[attr].mapper.class_
-                else:
-                    column = getattr(model, attr)
-            column = column.desc() if field.startswith("-") else column.asc()
-            obj._ordering_fields.add(column)
-        return obj
-
-    def _apply_options(self, stmt: Select) -> Select:
-        obj = self._clone()
-        for relations in obj._flat_options(obj._options):
-            joins = obj._joins
-            option = None
-            for relation in relations:
-                if relation in joins:
-                    option = (
-                        option.contains_eager(relation)
-                        if option
-                        else contains_eager(relation)
-                    )
-                else:
-                    option = (
-                        option.joinedload(relation) if option else joinedload(relation)
-                    )
-                joins = joins.get(relation, {})
-            stmt = stmt.options(option)
-        return stmt
-
-    def _flat_options(self, options, prefix=None):
-        if prefix is None:
-            prefix = []
-        result = []
-        for key, value in options.items():
-            new_prefix = prefix + [key]
-            if isinstance(value, dict) and not value:
-                result.append(new_prefix)
-            elif isinstance(value, dict):
-                result.extend(self._flat_options(value, new_prefix))
-        return result
-
-    async def all(self):
-        result = await self._session.scalars(self.query)
-        return result.unique().all()
-
-    async def first(self):
-        obj = self._clone()
-        obj._limit = 1
-        return await self._session.scalar(obj.query)
-
-    def _apply_where(self, stmt: Select) -> Select:
-        return stmt.where(*self._where)
-
-    def _apply_order(self, stmt: Select) -> Select:
-        return stmt.order_by(*list(self._ordering_fields))
-
-    def _apply_joins(self, stmt: Select, joins: dict) -> Select:
-        joins = deepcopy(joins)
-        for join, value in joins.items():
-            isouter = value.pop("isouter", False)
-            stmt = stmt.join(join, isouter=isouter)
-            stmt = self._apply_joins(stmt, value)
-        return stmt
-
-    def outerjoin(self, *joins) -> Self:
-        return self._join(joins, isouter=True)
-
-    def innerjoin(self, *joins) -> Self:
-        return self._join(joins, isouter=False)
-
-    def _join(self, joins, isouter) -> Self:
-        obj = self._clone()
-        for join in joins:
-            model = obj._model
-            nn_joins = obj._joins
-            prev, last = None, None
-            for attr in join.split("__"):
-                relationships = inspect(model).relationships
-                relationship = relationships[attr]
-                prev = nn_joins
-                kl_attr = last = relationship.class_attribute
-                nn_joins = nn_joins.setdefault(kl_attr, {})
-                model = relationship.mapper.class_
-            prev[last]["isouter"] = isouter
-        return obj
-
-    def limit(self, limit: int) -> Self:
-        obj = self._clone()
-        obj._limit = limit
-        return obj
-
-    def offset(self, offset: int) -> Self:
-        obj = self._clone()
-        obj._offset = offset
-        return obj
-
-    @property
-    def query(self):
-        # todo: запросы delete, update
-        stmt = self._apply_joins(self._stmt, self._joins)
-        stmt = self._apply_options(stmt)
-        stmt = self._apply_where(stmt)
-        stmt = self._apply_order(stmt)
-        if self._limit or self._offset:
-            subquery = select(self._model.id)
-            subquery = self._apply_joins(subquery, self._joins)
-            subquery = self._apply_where(subquery)
-            # сортировка не нужна
-            if self._limit is not None:
-                subquery = subquery.limit(self._limit)
-            if self._offset is not None:
-                subquery = subquery.offset(self._offset)
-            stmt = stmt.where(self._model.id.in_(subquery))
-        return stmt
-
-    # todo: другие методы
-    #
-    # async def last(self):
-    #     pass
-    #
-    # async def latest(self):
-    #     pass
-    #
-    # async def earliest(self):
-    #     pass
-    #
-    # async def update(self):
-    #     pass
-    #
-    # async def delete(self):
-    #     pass
-    #
-    # ...
-
+qs = some_repository.object.filter(status_code="published")[10:20]
+result = await qs
 ```
 
-На что можно обратить внимание, глядя на класс QuerySet.
+Это добавит в итоговый запрос `LIMIT` и `OFFSET`. Также возможно задать индекс:
 
-### lookup-ы
+```python
+qs = some_repository.object.filter(status_code="published")[0]
+obj = await qs
+```
 
-Первое, что бросается в глаза - словарь `_operators`. Он содержит `lookup`-ы и соответствующие им методы SQLAlchemy.
+И тогда это вернет объект, а не список
 
-Затем можно видеть публичные и непубличные методы. 
+### Управление жизенным циклом SQLAlchemy
 
-### Промежуточные методы
+Иногда необходимо выполнить flush или commit после выполнения запроса или, напр., для получения id
+вновь созданного объекта (для этого выполняется flush).  Для этого необходимо дать инструкции при
+помощих соответствующих методов `flush()` и `commit()`:
 
-Это методы пошагового формирования финального запроса:`filter()`, `order_by()`, `options()`, `outerjoin()`, `innerjoin()`, 
-`limit()`, `offset()`, которые не выполняют запросов в базу данных. Каждый из этих методов возвращает копию `QuerySet`.
+```python
+await some_repository.object.filter(status_code="published").commit().delete()
+```
 
-### Терминальные методы
+Параметры управления жизненным циклом сессии определяются для каждого запроса
 
-Эти методы выполняют запросы в базу данных: `all()`, `first()` (другие методы в разработке).
+### Кэширование
 
-### Финальный сформированный запрос
+Результат вычисления QuerySet не кэшируется.
 
-Посмотреть, каким получается итоговый SQL-запрос можно в property `QuerySet.query`.
+## QueySet API
 
-## Формирование запроса со связными моделями данных
+### filter()
 
-ВСЕ СВЯЗНЫЕ МОДЕЛИ JOIN-ЯТСЯ ДРУГ К ДРУГУ. 
+#### filter(**kw)
 
-Из-за этого могут быть проблемы с производительностью запросов. Такой стиль был выбран ради возможности фильтровать 
-обратные связи.
+Передает параметры фильтрации в QueryBuilder.
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### order_by()
+
+#### order_by(*args)
+
+Передает параметры сортировки в QueryBuilder.
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### options
+
+#### options(*args)
+
+Передает параметры options в QueryBuilder
+
+### innerjoin()
+
+#### innerjoin(*args)
+
+Передает параметры внутреннених join-ов в QueryBuilder.
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### outerjoin()
+
+#### outerjoin(*args)
+
+Передает параметры внешних join-ов в QueryBuilder.
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### execution_options()
+
+#### execution_options(**kw)
+
+Передает параметры выполнения запроса в QueryBuilder.
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### returning()
+
+#### returning(*args: str, return_model: bool = False)
+
+Передает параметры возвращаемых значений в QueryBuilder.
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### flush()
+
+#### flush(flush: bool = True)
+
+Сохраняет указание на выполнение flush после выполнения запроса
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### commit()
+
+#### commit(commit: bool = True)
+
+Сохраняет указание на выполнение commit после выполнения запроса. 
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### values_list()
+
+#### values_list(*args: str, flat: bool = False, named: bool = False)
+
+Передает названия запрашиваемых столбцов в QueryBuilder
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### distinct()
+
+#### distinct()
+
+Передает указание применить DISTINCT в QueryBuilder.
+
+Промежуточный метод. 
+
+Возвращает копию QuerySet.
+
+### first()
+
+#### first()
+
+Возвращает первый элемент QuerySet.
+
+Терминальный метод.
+
+### count()
+
+#### count()
+
+Возвращает количество объектов в QuerySet.
+
+Терминальный метод.
+
+### get_one_or_none()
+
+#### get_one_or_none()
+
+Возвращает первый объект в QuerySet или None. Если элементов больше одного, то рейзится исключение.
+
+Терминальный метод.
+
+### get_or_create()
+
+#### get_or_create(self, defaults: dict = None, **kw)
+
+Возвращает объект или создает новый, если объект по условиям не был найден.
+
+Терминальный метод.
+
+### update_or_create()
+
+#### update_or_create(self, defaults=None, create_defaults=None, **kw)
+
+Обновляет сущетсвующий объект или создает новый, если объект по условиям не найден.
+
+Терминальный метод.
+
+### in_bulk()
+
+#### in_bulk(self, id_list: list[Any] = None, *, field_name="id")
+
+Возвращает словарь, где в качестве ключа выступает значение из field_name, а значением - объект.
+
+Терминальный метод.
+
+### exists()
+
+#### exists()
+
+Возвращает признак наличия объектов в QuerySet.
+
+### delete()
+
+#### delete()
+
+Выполняет удаление объектов, входящих в QuerySet.
+
+### update()
+
+#### update(values: dict[str:Any])
+
+Выполняет обновление объектов, входящих в QuerySet.
+
+
+
+
+
+
+
 
 ## Примеры
 
