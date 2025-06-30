@@ -260,7 +260,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### filter()
 
-#### filter(**kw)
+#### filter(self, **kw: dict[str:Any])
 
 Передает параметры фильтрации в QueryBuilder.
 
@@ -270,7 +270,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### order_by()
 
-#### order_by(*args)
+#### order_by(*args: str)
 
 Передает параметры сортировки в QueryBuilder.
 
@@ -280,13 +280,13 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### options
 
-#### options(*args)
+#### options(*args: str)
 
 Передает параметры options в QueryBuilder
 
 ### innerjoin()
 
-#### innerjoin(*args)
+#### innerjoin(*args: str)
 
 Передает параметры внутреннених join-ов в QueryBuilder.
 
@@ -296,7 +296,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### outerjoin()
 
-#### outerjoin(*args)
+#### outerjoin(*args: str)
 
 Передает параметры внешних join-ов в QueryBuilder.
 
@@ -418,11 +418,15 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 Возвращает признак наличия объектов в QuerySet.
 
+Терминальный метод.
+
 ### delete()
 
 #### delete()
 
 Выполняет удаление объектов, входящих в QuerySet.
+
+Терминальный метод.
 
 ### update()
 
@@ -430,12 +434,106 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 Выполняет обновление объектов, входящих в QuerySet.
 
+Терминальный метод.
 
+## QueryBuilder
 
+Обертка над запросом SQLAlchemy.  Хранит параметры запроса.  Предоставляет методы для создания конечных методов.
+Собирает параметры запроса и в конце генерирует запрос.
 
+ВАЖНО! Все связные модели JOIN-ятся. Такой подход был выбран по нескольким причинам: 
 
+- относительная простота разработки, особенно в контексте работы с обратными связями и кейсов типа "вернуть только
+те разделы, у которых есть подразделы" (или наоборот);
+- относительно проще воспринимать и контролировать построение запроса (ведь запрос в итоге всего один).
 
+## API QueryBuilder
 
+### filter()
+
+#### filter(self, **kw: dict[str:Any])
+
+Парсит и валидирует условия фильтрации, обрабатывает сопутствующие join-ы.
+
+### order_by()
+
+#### order_by(self, *args: str)
+
+Парсит и валидирует условия сортировки, обрабатывает сопутствующие join-ы.
+
+### options()
+
+#### options(self, *args: str)
+
+Парсит и валидирует options, обрабатывает сопутствующие join-ы.
+
+Найденные JOIN-ы сохраняются вместе в JOIN-ами, найденными при парсинге условий фильтрации и сортировки.
+
+### returning()
+
+#### returning(self, *args: str, return_model: bool = False)
+
+Парсит и валидирует возвращаемые значения.
+
+### execution_options()
+
+### execution_options(self, **kw: dict[str, Any])
+
+Сохраняет условия выполнения запроса.
+
+### values_list()
+
+#### values_list(self, *args: str)
+
+Парсит и валидирует наименования возвращаемых столбцов.
+
+### join()
+
+### join(self, *args: str, isouter: bool)
+
+Парсит и валидирует JOIN-ы
+
+### distinct()
+
+### distinct() -> None
+
+Сохраняет указание применить DISTINCT
+
+### limit()
+
+### limit(self, limit: int | None) -> None
+
+Сохраняет значение для LIMIT.
+
+### offset()
+
+### offset(self, offset: int | None) -> None
+
+Сохраняет значение для OFFSET.
+
+### build_count_stmt()
+
+### build_count_stmt() -> Select
+
+Возвращает запрос на подсчет количества.
+
+### build_delete_stmt()
+
+### build_delete_stmt(self) -> Delete
+
+Возвращает запрос на удаление.
+
+### build_update_stmt()
+
+### build_update_stmt(self, values: dict[str, Any]) -> Update
+
+Возвращает запрос на обновление.
+
+### build_select_stmt()
+
+### build_select_stmt(self) -> Select
+
+Возаращает запрос на выборку данных.
 
 ## Примеры
 
