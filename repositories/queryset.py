@@ -90,9 +90,6 @@ class QuerySet:
         self._sliced = False
 
     def _clone(self) -> Self:
-        """
-        Возвращает копию QuerySet
-        """
         clone = self.__class__(self._model_cls, self._session)
         clone._query_builder = self._query_builder.clone()
         clone._flush = self._flush

@@ -43,75 +43,103 @@ class InvalidJoinFieldError(Exception):
 
 class QueryBuilder:
     """
-    Обертка над запросом SQLAlchemy
+    Обертка над запросом SQLAlchemy.  Хранит параметры запроса.  Предоставляет методы для
+    создания конечных методов
 
-    Собирает в себя параметры запроса и в конце генерирует запрос
+    Собирает параметры запроса и в конце генерирует запрос
 
-    рутовая модель пусть всегда будет безалиасной?
-    _where
-        в рутовой модели. просто список? ['name', 'status_id']
-        брать колонки от модели или алиаса
-    _order_by
-        тоже самое как для _where
+    - ПАРАМЕТРЫ ФИЛЬТРАЦИИ
 
-    _joins
-        при джойнах не всегда нужно выполнять сортировку (в случае с _options с подзапросом)
+    Хранятся в атрибуте _where для источника (модели) из FROM (_model_cls).  Условия фильтрации
+    по связным полям хранятся а атрибует в ._joins, так как связные модели join-ятся через алиасы,
+    которые задаются отдельно, и соответственно, поля должны быть взяты от алиасов
+
+    Пример структуры данных в _where:
+
+        {
+            "name": {
+                "op": eq,
+                "value": "значение"
+            }
+        }
+
+        где name - название поля модели, по которому необходимо выполнить филтрацию, value -
+        значение для фильтрации, а op - операция, напр., ilike, eq, icontains и тд
+
+    - ПАРАМЕТРЫ СОРТИРОВКИ
+
+    Хранятся в атрибутах _order_by для источника (модели) из FROM (_model_cls).  Условия сортировки по
+    связным полям хранятся в атрибуте ._joins, так как связные модели join-ятся через алиасы, которые
+    задаются отдельно, и соответственно, поля должны быть взяты от алиасов
+
+    Пример структуры данных в _order_by:
+
+        {
+            "status_id": {
+                "direction": "asc"
+            },
+        }
+
+        где status_id - наименование поля сортировки, а direction - направление сортировки
+
+    - JOIN-ы
+
+    join-ы парсятся из атрибутов фильтрации, сортировок, options, явного задания join-ов методом join()
+
+    Пример структуры данных в атрибуте .joins:
+
+        {
+            "children": {
+                "subsections": {
+                    "model_cls": Subsection,
+                    "where": {
+                        'name': {
+                            'op': eq,
+                            'value': "значение"
+                        }
+                    },
+                    "order_by": {
+                        'status_id': {
+                            'direction': 'asc'
+                        },
+                        'name': {
+                            'direction': 'desc'
+                        },
+                    },
+                    "is_outer": False,
+                    "children": {
+                        "status": {
+                            'model_cls': PublicationStatus,
+                            "where": {
+                                'code': {
+                                    'op': eq,
+                                    'value': "published"
+                                }
+                            },
+                        }
+                    }
+                },
+                "status": {
+                    "model_cls": PublicationStatus,
+                    "is_outer": False,
+                }
+            }
+        }
+
+    - OPTIONS
+
+    Сохраняются как есть в атрибуте _options:
+
+        ["subsections__status", "status"]
 
     """
 
     def __init__(self, model_cls: Type[Model]):
         self._model_cls = model_cls
         self._where = {}
-        # self._where = {'name': {'op': eq, 'value': "значение"}}
-        self._joins = {}
-        # self._joins = {
-        #     "children": {
-        #         "subsections": {
-        #             "model_cls": Subsection,
-        #             "where": {
-        #                 'name': {
-        #                     'op': eq,
-        #                     'value': "значение"
-        #                 }
-        #             },
-        #             "order_by": {
-        #                 'status_id': {
-        #                     'direction': 'asc'
-        #                 },
-        #                 'name': {
-        #                     'direction': 'desc'
-        #                 },
-        #             },
-        #             "is_outer": False,
-        #             "children": {
-        #                 "status": {
-        #                     'model_cls': PublicationStatus,
-        #                     "where": {
-        #                         'code': {
-        #                             'op': eq,
-        #                             'value': "published"
-        #                         }
-        #                     },
-        #                 }
-        #             }
-        #         },
-        #         "status": {
-        #             "model_cls": PublicationStatus,
-        #             "is_outer": False,
-        #         }
-        #     }
-        # }
-        # self._options = ["subsections__status", "status"]  # {"subsections": {"status": {}}, "status": {}}
-        self._options = set()
         self._order_by = {}
-        # self._order_by = {
-        #     'status_id': {
-        #         'direction': 'asc'
-        #     },
-        #     'name': {
-        #         'direction': 'desc'
-        #     },
-        # }
+        self._joins = {}
+        self._options = set()
         self._limit = None
         self._offset = None
         self._returning = []
@@ -120,9 +148,6 @@ class QueryBuilder:
         self._distinct = None
 
     def clone(self) -> Self:
-        """
-        Создает копию QueryBuilder
-        """
         clone = self.__class__(self._model_cls)
         clone._where = {**self._where}
         clone._order_by = {**self._order_by}
@@ -152,7 +177,7 @@ class QueryBuilder:
                 if attr in relationships:
                     model_cls = getattr(model_cls, attr).property.mapper.class_
                     joins = joins.setdefault("children", {}).setdefault(attr, {})
-                    joins['model_cls'] = model_cls
+                    joins["model_cls"] = model_cls
                     if "where" in joins:
                         where = joins["where"]
                     else:
@@ -187,7 +212,7 @@ class QueryBuilder:
                 if attr in relationships:
                     model_cls = getattr(model_cls, attr).property.mapper.class_
                     joins = joins.setdefault("children", {}).setdefault(attr, {})
-                    joins['model_cls'] = model_cls
+                    joins["model_cls"] = model_cls
                     if "order_by" in joins:
                         order_by = joins["order_by"]
                     else:
@@ -319,24 +344,40 @@ class QueryBuilder:
 
     def build_select_stmt(self) -> Select:
         """
-        Работает верно:
-        SELECT anon_1.id,
-               anon_1.name,
-               anon_1.status_id,
-               subsections.id        AS id_1,
-               subsections.name      AS name_1,
-               subsections.section_id,
-               subsections.status_id AS status_id_1
-        FROM (
-            SELECT DISTINCT sections.id AS id, sections.name AS name, sections.status_id AS status_id
-            FROM sections
-            LEFT JOIN subsections ON sections.id = subsections.section_id AND subsections.status_id = 1
-            LIMIT 10
-        ) AS anon_1
-        LEFT JOIN subsections ON anon_1.id = subsections.section_id AND subsections.status_id = 1
+        Возвращает запрос на выборку
 
-        Нужно:
-        1. создать подзапрос
+        Лимитированные запросы с options приходится составлять при помощи подзапроса, чтобы
+        гарантировать правильность применений OFFSET и LIMIT, так как связные модели join-ятся
+        (а не выбираются при помощи selectinload) и добавляются в выборку, что в случае в
+        обратными связями даст больше строк, чем есть в основной таблице
+
+        Пример лимитированного запроса с options:
+            SELECT anon_1.id,
+                   anon_1.name,
+                   anon_1.status_id,
+                   subsections.id        AS id_1,
+                   subsections.name      AS name_1,
+                   subsections.section_id,
+                   subsections.status_id AS status_id_1
+            FROM (
+                SELECT DISTINCT sections.id AS id, sections.name AS name, sections.status_id AS status_id
+                FROM sections
+                LEFT JOIN subsections ON sections.id = subsections.section_id AND subsections.status_id = 1
+                LIMIT 10
+            ) AS anon_1
+            LEFT JOIN subsections ON anon_1.id = subsections.section_id AND subsections.status_id = 1
+
+        А это обычный запрос, который может потерять данные:
+
+            SELECT sections.id,
+                   sections.name,
+                   sections.status_id,
+                   subsections.id        AS id_1,
+                   subsections.name      AS name_1,
+                   subsections.section_id,
+                   subsections.status_id AS status_id_1
+            FROM sections
+            LEFT JOIN subsections ON anon_1.id = subsections.section_id AND subsections.status_id = 1
         """
         if self._options and self._select_entities:
             raise ValueError("Одновременно заданные options и values_list не могут быть обработаны вместе")
@@ -448,67 +489,9 @@ class QueryBuilder:
         но у основной модели свои фильтры и сортировки, которые применяются отдельно - и это должны быть строки,
         тк внешней моделью может быть алиас, а не рут модель
 
-
         """
         parent_model_cls = self._model_cls if parent_model_cls is None else parent_model_cls
         joins = self._joins
-        """
-        {
-            "children": {
-                "subsections": {
-                    "model_cls": aliased(Section),
-                    "children": {
-                        "status": {
-                            "model_cls": aliased(Subsection),
-                            "children": {
-                            
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        """
-
-        """
-        {
-            "children": {
-                "subsections": {
-                    "model_cls": Subsection,
-                    "where": {
-                        'name': {
-                            'op': eq,
-                            'value': "значение"
-                        }
-                    },
-                    "order_by": {
-                        'status_id': {
-                            'direction': 'asc'
-                        },
-                        'name': {
-                            'direction': 'desc'
-                        },
-                    },
-                    "is_outer": False,
-                    "children": {
-                        "status": {
-                            'model_cls': PublicationStatus,
-                            "where": {
-                                'code': {
-                                    'op': eq,
-                                    'value': "published"
-                                }
-                            },
-                        }
-                    }
-                },
-                "status": {
-                    "model_cls": PublicationStatus,
-                    "is_outer": False,
-                }
-            }
-        }
-        """
         where = []
         order_by = []
         tree = {}
