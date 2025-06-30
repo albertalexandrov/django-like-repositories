@@ -74,6 +74,9 @@ class QuerySet:
 
     Параметры управления жизненным циклом сессии определяются для каждого запроса
 
+    - КЭШИРОВАНИЕ
+
+    Результат вычисления QuerySet не кэшируется.
     """
     def __init__(self, model: Type[Model], session: AsyncSession):
         self._model_cls = model
@@ -264,9 +267,9 @@ class QuerySet:
             obj = yield from self._session.scalar(stmt).__await__()
             return obj
         result = yield from self._session.execute(stmt).__await__()
-        # SQLAlchemy требует вызвать метод unique()
-        # The unique() method must be invoked on this Result, as it contains results
-        # that include joined eager loads against collections
+        # SQLAlchemy требует вызвать метод unique(), иначе выдает ошибку:
+        #   The unique() method must be invoked on this Result, as it contains results
+        #   that include joined eager loads against collections
         return self._iterate_result_func(result.unique())
 
     def __getitem__(self, k: int | slice) -> Self:
@@ -296,5 +299,15 @@ class QuerySet:
         return clone
 
     def _validate_sliced(self) -> None:
+        """
+        Принимаем, что если был взят срез, то после невозможно менять QuerySet
+
+        Внятной мотивации для этого нет.  Просто кажется, что такая, например,
+        цепочка вызовов методов выглядит более чем странной:
+
+            >>> some_repository.objects.filter(code="code")[:3].order_by("id")[0][0:1]
+
+        Можно сказать, что это предтерминальный метод
+        """
         if self._sliced:
             raise TypeError("Невозможно изменить запрос после того, как срез был взят.")
