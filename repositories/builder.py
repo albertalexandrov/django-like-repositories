@@ -116,7 +116,7 @@ class QueryBuilder:
         self._offset = None
         self._returning = []
         self._execution_options = {}
-        self._values_list = []
+        self._select_entities = []
         self._distinct = None
 
     def clone(self) -> Self:
@@ -130,7 +130,7 @@ class QueryBuilder:
         clone._options = {*self._options}
         clone._returning = [*self._returning]
         clone._execution_options = {**self._execution_options}
-        clone._values_list = [*self._values_list]
+        clone._select_entities = [*self._select_entities]
         clone._limit = self._limit
         clone._offset = self._offset
         clone._distinct = self._distinct
@@ -238,10 +238,10 @@ class QueryBuilder:
         self._execution_options = kw
 
     def values_list(self, *args: str) -> None:
-        self._values_list.clear()
+        self._select_entities.clear()
         for column_name in args:
             column = get_column(self._model_cls, column_name)
-            self._values_list.append(column)
+            self._select_entities.append(column)
 
     def join(self, *args: str, isouter: bool) -> None:
         for join_field in args:
@@ -338,7 +338,7 @@ class QueryBuilder:
         Нужно:
         1. создать подзапрос
         """
-        if self._options and self._values_list:
+        if self._options and self._select_entities:
             raise ValueError("Одновременно заданные options и values_list не могут быть обработаны вместе")
         if self._options and (self._limit or self._offset):
             # надо делать подзапрос
@@ -357,7 +357,7 @@ class QueryBuilder:
         else:
             # селектится все
             # не нужно делать подзапрос
-            stmt = select(*self._values_list) if self._values_list else select(self._model_cls)
+            stmt = select(*self._select_entities) if self._select_entities else select(self._model_cls)
             stmt = self._apply_execution_options(stmt)
             stmt = self._apply_distinct(stmt)
             stmt = self._apply_joins(stmt)

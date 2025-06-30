@@ -1,6 +1,4 @@
 import logging
-import random
-from copy import deepcopy
 from typing import Self, Any, Type
 
 from sqlalchemy import Result, Row
@@ -15,10 +13,6 @@ logger = logging.getLogger("repositories")
 
 
 def iterate_scalars(result: Result) -> list[Model]:
-    return list(result.scalars().all())
-
-
-def iterate_flat_values_list(result: Result) -> list[Any]:
     return list(result.scalars().all())
 
 
@@ -38,15 +32,13 @@ class QuerySet:
         self._model_cls = model
         self._session = session
         self._query_builder = QueryBuilder(self._model_cls)
-        self._iterable_result_func = iterate_scalars
+        self._iterate_result_func = iterate_scalars
 
     def _clone(self) -> Self:
         """
         Возвращает копию кверисета
         """
-        # todo: проверить, что происходит с изменяемыми атрибутами при изменении этих атрибутов в копиях
         clone = self.__class__(self._model_cls, self._session)
-        # делать копии сессии и модели не нужно
         clone._query_builder = self._query_builder.clone()
         return clone
 
@@ -92,10 +84,10 @@ class QuerySet:
             raise TypeError("'flat' не валиден, когда метод values_list() вызывается с более чем одним полем")
         clone = self._clone()
         clone._query_builder.values_list(*args)
-        clone._iterable_result_func = (
+        clone._iterate_result_func = (
             iterate_named_values_list
             if named
-            else iterate_flat_values_list if flat else iterate_values_list
+            else iterate_scalars if flat else iterate_values_list
         )
         return clone
 
@@ -109,18 +101,21 @@ class QuerySet:
         clone._query_builder.offset(offset)
         return clone
 
-    def distinct(self):
+    def distinct(self) -> Self:
         clone = self._clone()
         clone._query_builder.distinct()
         return clone
 
-    async def all(self) -> list[Any]:
+    def __await__(self) -> list[Any]:
         stmt = self._query_builder.build_select_stmt()
-        result = await self._session.execute(stmt)
-        # SQLAlchemy требует вызвать метод unique
+        result = yield from self._session.execute(stmt).__await__()
+        # SQLAlchemy требует вызвать метод unique()
         # The unique() method must be invoked on this Result, as it contains results
         # that include joined eager loads against collections
-        return self._iterable_result_func(result.unique())
+        return self._iterate_result_func(result.unique())
+
+    def all(self) -> Self:
+        return self._clone()
 
     async def first(self) -> Model | None:
         stmt = self.limit(1)._query_builder.build_select_stmt()
@@ -136,11 +131,11 @@ class QuerySet:
         return result.one_or_none()
 
     async def get_or_create(
-        self, defaults: dict = None, *, flush: bool = False, commit: bool = False, **kwargs
+        self, defaults: dict = None, *, flush: bool = False, commit: bool = False, **kw
     ) -> tuple[Model, bool]:
-        if obj := await self.filter(**kwargs).get_one_or_none():
+        if obj := await self.filter(**kw).get_one_or_none():
             return obj, False
-        params = self._extract_model_params(defaults, **kwargs)
+        params = self._extract_model_params(defaults, **kw)
         obj = self._model_cls(**params)
         self._session.add(obj)
         await flush_or_commit(obj, session=self._session, flush=flush, commit=commit)
@@ -175,7 +170,7 @@ class QuerySet:
             filter_key = "{}__in".format(field_name)
             id_list = tuple(id_list)
             filters[filter_key] = id_list
-        objs = await self.filter(**filters).all()
+        objs = await self.filter(**filters)
         return {getattr(obj, field_name): obj for obj in objs}
 
     async def exists(self) -> bool:

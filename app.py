@@ -85,18 +85,21 @@ async def test(
         # .order_by('-subsections__status__code')
         # .outerjoin("subsections__status")
         # .outerjoin("subsections")
-        .limit(2)
-        .options("subsections")
+        # .limit(2)
+        # .options("subsections")
         # .options("subsections__status")
         # .options("subsections__status")
         # .returning('id', 'name')
         # .execution_options(populate_existing=True)
     )
-    r = await queryset.all()
+    print(await queryset.values_list('id', flat=True))
+    r = queryset.values_list('id', flat=True)
+    async for i in r:
+        print(i)
     # r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
     # print(r.scalars().all())
 
-    return r
+    return i
 
 
 @app.get("/test-on-session")
