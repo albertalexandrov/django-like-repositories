@@ -2,7 +2,6 @@ from itertools import islice
 from typing import Generic, Any, Type, Self
 
 from fastapi.params import Depends
-from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
@@ -67,26 +66,8 @@ class BaseRepository(Generic[Model]):
             await self._flush_commit_reset(objs)
         return objs
 
-    # методы с ограниченной функциональностью
-
-    async def all(self) -> list[Model]:
-        stmt = select(self.model_cls)
-        result = await self._session.scalars(stmt)
-        return result.all()  # noqa
-
     async def get_by_pk(self, pk: Any) -> Model:
         return await self._session.get(self.model_cls, pk)
-
-    async def delete(self) -> None:
-        stmt = delete(self.model_cls)
-        await self._session.execute(stmt)
-        await self._flush_commit_reset()
-
-    async def first(self) -> Model | None:
-        stmt = select(self.model_cls).limit(1)
-        return await self._session.scalar(stmt)
-
-    # возможно какие то другие методы с ограниченной фунциональностью (получение списка, напр.) - накидывайте
 
     @property
     def objects(self) -> QuerySet:
