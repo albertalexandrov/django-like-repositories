@@ -26,6 +26,53 @@ def iterate_named_values_list(result: Result) -> list[Row]:
 
 class QuerySet:
     """
+    Представляет собой ленивый поиск в базе данных для набора объектов (во многом аналог Django QuerySet)
+
+    - ПРОМЕЖУТОЧНЫЕ И ТЕРМИНАЛЬНЫЕ МЕТОДЫ
+
+    Класс содержит методы, которые деляться на два типа:
+        1. промежуточные и
+        2. терминальные.
+
+    Промежуточные методы - filter(), order_by(), returning(), innerjoin(), outerjoin(), options(),
+    execution_options(), values_list(), distinct(), flush(), commit()) - не выполняют запросов в БД, а
+    предназначены для того, чтобы принимать в себя параметры запроса (параметры фильтрации, сортировки и тд)
+    Промежуточные методы возвращают копию QuerySet.
+
+    Терминальные методы - first(), count(), get_one_or_none(), delete(), update(), exists(), in_bulk(),
+    update_or_create(), get_or_create() - соответственно, выполняют запросы в БД.
+
+    - ВЫЧИСЛЕНИЕ QuerySet
+
+    Вычисляется QuerySet простым await-ом:
+
+        >>> qs = some_repository.object.filter(status_code="published")
+        >>> result = await qs
+
+    - СРЕЗЫ
+
+    Лимитировать QuerySet можно при помощи срезов (шаг среза не поддерживается).  Для этого необходимо
+    передать срез:
+
+        >>> qs = some_repository.object.filter(status_code="published")[10:20]
+        >>> result = await qs
+
+    Это добавит в итоговый запрос LIMIT и OFFSET. Также возможно задать индекс:
+
+        >>> qs = some_repository.object.filter(status_code="published")[0]
+        >>> obj = await qs
+
+    И тогда это вернет объект, а не список
+
+    - УПРАВЛЕНИЕ ЖИЗНЕННЫМ ЦИКЛОМ СЕССИИ SQLAlchemy
+
+    Иногда необходимо выполнить flush или commit после выполнения запроса или, напр., для получения id
+    вновь созданного объекта (для этого выполняется flush).  Для этого необходимо дать инструкции при
+    помощих соответствующих методов flush() и commit():
+
+        >>> await some_repository.object.filter(status_code="published").commit().delete()
+
+    Параметры управления жизненным циклом сессии определяются для каждого запроса
 
     """
     def __init__(self, model: Type[Model], session: AsyncSession):
@@ -40,7 +87,7 @@ class QuerySet:
 
     def _clone(self) -> Self:
         """
-        Возвращает копию кверисета
+        Возвращает копию QuerySet
         """
         clone = self.__class__(self._model_cls, self._session)
         clone._query_builder = self._query_builder.clone()
@@ -55,10 +102,6 @@ class QuerySet:
         clone = self._clone()
         clone._query_builder.filter(**kw)
         return clone
-
-    def _validate_sliced(self) -> None:
-        if self._sliced:
-            raise TypeError("Невозможно изменить запрос после того, как срез был взят.")
 
     def order_by(self, *args: str) -> Self:
         self._validate_sliced()
@@ -111,6 +154,8 @@ class QuerySet:
             await self._session.flush(objs)
         elif self._commit:
             await self._session.commit()
+        # основная идея сброса параметров управления жизненным циклом сессии SQLAlchemy состоит в том,
+        # чтобы в при каждом запрос явно им управлять
         self._flush = None
         self._commit = None
 
@@ -249,3 +294,7 @@ class QuerySet:
             clone._query_builder.offset(k.start)
         self._sliced = True
         return clone
+
+    def _validate_sliced(self) -> None:
+        if self._sliced:
+            raise TypeError("Невозможно изменить запрос после того, как срез был взят.")
