@@ -37,7 +37,7 @@ class QuerySet:
 
     Промежуточные методы - filter(), order_by(), returning(), innerjoin(), outerjoin(), options(),
     execution_options(), values_list(), distinct(), flush(), commit()) - не выполняют запросов в БД, а
-    предназначены для того, чтобы принимать в себя параметры запроса (параметры фильтрации, сортировки и тд)
+    предназначены для того, чтобы принимать параметры запроса (параметры фильтрации, сортировки и тд)
     Промежуточные методы возвращают копию QuerySet.
 
     Терминальные методы - first(), count(), get_one_or_none(), delete(), update(), exists(), in_bulk(),
