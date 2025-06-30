@@ -1,8 +1,6 @@
-from typing import Type, List
+from typing import Type
 
 from sqlalchemy import inspect, Column, ColumnCollection
-from sqlalchemy.orm import Relationship
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy.util._collections import ReadOnlyProperties
 
@@ -11,7 +9,6 @@ from repositories.types import Model
 
 
 def validate_has_columns(model_cls: Type[Model], *args: str) -> None:
-    # todo: может быть еще и инстанс
     columns = inspect(model_cls).columns
     for col in args:
         if col not in columns:
@@ -31,20 +28,6 @@ def get_columns(model_or_aliased_cls: Type[Model] | AliasedClass) -> ColumnColle
     return inspect(model_cls).columns
 
 
-async def flush_or_commit(*objs: Model, session: AsyncSession, flush: bool, commit: bool) -> None:
-    if flush and not commit:
-        await session.flush(objs)
-    elif commit:
-        await session.commit()
-
-
-def get_relationship(model_cls: Type[Model], relationship_name: str) -> Relationship | None:
-    relationship = inspect(model_cls).relationships.get(relationship_name)
-    if relationship is not None:
-        return relationship
-    raise ValueError(f"В модели {model_cls.__name__} отсутствует связь `{relationship_name}`")
-
-
 def get_pk(model_cls: Type[Model]) -> Column:
     pk = inspect(model_cls).primary_key
     if len(pk) == 1:
@@ -55,7 +38,7 @@ def get_pk(model_cls: Type[Model]) -> Column:
     )
 
 
-def get_model_cls(model_or_aliased_cls: Type[Model] | AliasedClass):
+def get_model_cls(model_or_aliased_cls: Type[Model] | AliasedClass) -> Type[Model]:
     if isinstance(model_or_aliased_cls, AliasedClass):
         return inspect(model_or_aliased_cls).mapper.class_
     return model_or_aliased_cls

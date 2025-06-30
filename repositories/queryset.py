@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repositories.builder import QueryBuilder
 from repositories.constants import LOOKUP_SEP
 from repositories.types import Model
-from repositories.utils import validate_has_columns, get_column, flush_or_commit
+from repositories.utils import validate_has_columns, get_column
 
 logger = logging.getLogger("repositories")
 
@@ -33,6 +33,8 @@ class QuerySet:
         self._session = session
         self._query_builder = QueryBuilder(self._model_cls)
         self._iterate_result_func = iterate_scalars
+        self._flush = None
+        self._commit = None
 
     def _clone(self) -> Self:
         """
@@ -40,6 +42,8 @@ class QuerySet:
         """
         clone = self.__class__(self._model_cls, self._session)
         clone._query_builder = self._query_builder.clone()
+        clone._flush = self._flush
+        clone._commit = self._commit
         return clone
 
     def filter(self, **kw: dict[str:Any]) -> Self:
@@ -76,6 +80,24 @@ class QuerySet:
         clone = self._clone()
         clone._query_builder.returning(*args, return_model=return_model)
         return clone
+
+    def flush(self, flush: bool = True, /) -> Self:
+        clone = self._clone()
+        clone._flush = flush
+        return clone
+
+    def commit(self, commit: bool = True, /) -> Self:
+        clone = self._clone()
+        clone._commit = commit
+        return clone
+
+    async def _flush_commit_reset(self, *objs: Model) -> None:
+        if self._flush and not self._commit and objs:
+            await self._session.flush(objs)
+        elif self._commit:
+            await self._session.commit()
+        self._flush = None
+        self._commit = None
 
     def values_list(self, *args: str, flat: bool = False, named: bool = False) -> Self:
         if flat and named:
@@ -130,29 +152,25 @@ class QuerySet:
         result = await self._session.scalars(stmt)
         return result.one_or_none()
 
-    async def get_or_create(
-        self, defaults: dict = None, *, flush: bool = False, commit: bool = False, **kw
-    ) -> tuple[Model, bool]:
+    async def get_or_create(self, defaults: dict = None, **kw) -> tuple[Model, bool]:
         if obj := await self.filter(**kw).get_one_or_none():
             return obj, False
         params = self._extract_model_params(defaults, **kw)
         obj = self._model_cls(**params)
         self._session.add(obj)
-        await flush_or_commit(obj, session=self._session, flush=flush, commit=commit)
+        await self._flush_commit_reset(obj)
         return obj, True
 
-    async def update_or_create(
-        self, defaults=None, create_defaults=None, *, flush: bool = False, commit: bool = False, **kwargs
-    ) -> tuple[Model, bool]:
+    async def update_or_create(self, defaults=None, create_defaults=None, **kw) -> tuple[Model, bool]:
         update_defaults = defaults or {}
         if create_defaults is None:
             create_defaults = update_defaults
-        obj, created = await self.get_or_create(defaults=create_defaults, flush=flush, commit=commit, **kwargs)
+        obj, created = await self.get_or_create(defaults=create_defaults, **kw)
         if created:
             return obj, False
-        validate_has_columns(obj, *update_defaults.keys())
+        validate_has_columns(obj.__class__, *update_defaults.keys())
         obj.update(**update_defaults)
-        await flush_or_commit(obj, session=self._session, flush=flush, commit=commit)
+        await self._flush_commit_reset(obj)
         return obj, created
 
     async def in_bulk(self, id_list: list[Any] = None, *, field_name="id") -> dict[Any:Model]:
@@ -176,21 +194,21 @@ class QuerySet:
     async def exists(self) -> bool:
         return await self.count() > 0
 
-    async def delete(self, flush: bool = False, commit: bool = False) -> Result[Model]:
+    async def delete(self) -> Result[Model]:
         stmt = self._query_builder.build_delete_stmt()
         result = await self._session.execute(stmt)
-        await flush_or_commit(session=self._session, flush=flush, commit=commit)
+        await self._flush_commit_reset()
         return result
 
-    async def update(self, values: dict[str:Any], flush: bool = False, commit: bool = False) -> Result[Model]:
+    async def update(self, values: dict[str:Any]) -> Result[Model]:
         stmt = self._query_builder.build_update_stmt(values)
         result = await self._session.execute(stmt)
-        await flush_or_commit(session=self._session, flush=flush, commit=commit)
+        await self._flush_commit_reset()
         return result
 
-    def _extract_model_params(self, defaults: dict | None, **kwargs: dict[str:Any]) -> dict[str:Any]:
+    def _extract_model_params(self, defaults: dict | None, **kw: dict[str:Any]) -> dict[str:Any]:
         defaults = defaults or {}
-        params = {k: v for k, v in kwargs.items() if LOOKUP_SEP not in k}
+        params = {k: v for k, v in kw.items() if LOOKUP_SEP not in k}
         params.update(defaults)
         validate_has_columns(self._model_cls, *params.keys())
         return params

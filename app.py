@@ -92,14 +92,10 @@ async def test(
         # .returning('id', 'name')
         # .execution_options(populate_existing=True)
     )
-    print(await queryset.values_list('id', flat=True))
-    r = queryset.values_list('id', flat=True)
-    async for i in r:
-        print(i)
-    # r = await repository.create({'name': '2', 'status_id': 1}, commit=True)
-    # print(r.scalars().all())
 
-    return i
+    res = await repository.create(name="Section", status_id=1)
+    print(res.id)
+    return res
 
 
 @app.get("/test-on-session")
