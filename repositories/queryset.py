@@ -33,8 +33,10 @@ class QuerySet:
         self._session = session
         self._query_builder = QueryBuilder(self._model_cls)
         self._iterate_result_func = iterate_scalars
-        self._flush = None
-        self._commit = None
+        self._flush = False
+        self._commit = False
+        self._scalar = False
+        self._sliced = False
 
     def _clone(self) -> Self:
         """
@@ -44,39 +46,52 @@ class QuerySet:
         clone._query_builder = self._query_builder.clone()
         clone._flush = self._flush
         clone._commit = self._commit
+        clone._scalar = self._scalar
+        clone._sliced = self._sliced
         return clone
 
     def filter(self, **kw: dict[str:Any]) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.filter(**kw)
         return clone
 
+    def _validate_sliced(self) -> None:
+        if self._sliced:
+            raise TypeError("Невозможно изменить запрос после того, как срез был взят.")
+
     def order_by(self, *args: str) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.order_by(*args)
         return clone
 
     def options(self, *args: str) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.options(*args)
         return clone
 
     def innerjoin(self, *args: str) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.join(*args, isouter=False)
         return clone
 
     def outerjoin(self, *args: str) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.join(*args, isouter=True)
         return clone
 
     def execution_options(self, **kw: dict[str:Any]) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.execution_options(**kw)
         return clone
 
     def returning(self, *args: str, return_model: bool = False) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.returning(*args, return_model=return_model)
         return clone
@@ -113,42 +128,24 @@ class QuerySet:
         )
         return clone
 
-    def limit(self, limit: int | None) -> Self:
-        clone = self._clone()
-        clone._query_builder.limit(limit)
-        return clone
-
-    def offset(self, offset: int | None) -> Self:
-        clone = self._clone()
-        clone._query_builder.offset(offset)
-        return clone
-
     def distinct(self) -> Self:
+        self._validate_sliced()
         clone = self._clone()
         clone._query_builder.distinct()
         return clone
-
-    def __await__(self) -> list[Any]:
-        stmt = self._query_builder.build_select_stmt()
-        result = yield from self._session.execute(stmt).__await__()
-        # SQLAlchemy требует вызвать метод unique()
-        # The unique() method must be invoked on this Result, as it contains results
-        # that include joined eager loads against collections
-        return self._iterate_result_func(result.unique())
 
     def all(self) -> Self:
         return self._clone()
 
     async def first(self) -> Model | None:
-        stmt = self.limit(1)._query_builder.build_select_stmt()
-        return await self._session.scalar(stmt)
+        return await self[0]
 
     async def count(self) -> int:
         stmt = self._query_builder.build_count_stmt()
         return await self._session.scalar(stmt)
 
     async def get_one_or_none(self) -> Model | None:
-        stmt = self.limit(2)._query_builder.build_select_stmt()
+        stmt = self[:2]._query_builder.build_select_stmt()
         result = await self._session.scalars(stmt)
         return result.one_or_none()
 
@@ -174,6 +171,7 @@ class QuerySet:
         return obj, created
 
     async def in_bulk(self, id_list: list[Any] = None, *, field_name="id") -> dict[Any:Model]:
+        self._validate_sliced()
         filters = {}
         validate_has_columns(self._model_cls, field_name)
         column = get_column(self._model_cls, field_name)
@@ -195,12 +193,14 @@ class QuerySet:
         return await self.count() > 0
 
     async def delete(self) -> Result[Model]:
+        self._validate_sliced()
         stmt = self._query_builder.build_delete_stmt()
         result = await self._session.execute(stmt)
         await self._flush_commit_reset()
         return result
 
     async def update(self, values: dict[str:Any]) -> Result[Model]:
+        self._validate_sliced()
         stmt = self._query_builder.build_update_stmt(values)
         result = await self._session.execute(stmt)
         await self._flush_commit_reset()
@@ -212,3 +212,40 @@ class QuerySet:
         params.update(defaults)
         validate_has_columns(self._model_cls, *params.keys())
         return params
+
+    def __await__(self) -> list[Any]:
+        stmt = self._query_builder.build_select_stmt()
+        if self._scalar:
+            obj = yield from self._session.scalar(stmt).__await__()
+            return obj
+        result = yield from self._session.execute(stmt).__await__()
+        # SQLAlchemy требует вызвать метод unique()
+        # The unique() method must be invoked on this Result, as it contains results
+        # that include joined eager loads against collections
+        return self._iterate_result_func(result.unique())
+
+    def __getitem__(self, k: int | slice) -> Self:
+        self._validate_sliced()
+        if not isinstance(k, (int, slice)):
+            raise TypeError(
+                "Индекс должен быть целыми числом или объектом slice, а не %s."
+                % type(k).__name__
+            )
+        if (isinstance(k, int) and k < 0) or (isinstance(k, slice) and ((k.start is not None and k.start < 0) or (k.stop is not None and k.stop < 0))):
+            raise ValueError("Отрицательные индексы не поддерживаются")
+        if isinstance(k, slice):
+            if k.step is not None:
+                raise ValueError("Использование шага среза не предусмотрена")
+            elif k.start >= k.stop:
+                raise ValueError("Начало срез должно быть меньше конца")
+        clone = self._clone()
+        if isinstance(k, int):
+            clone._scalar = True
+            clone._query_builder.limit(1)
+            clone._query_builder.offset(k)
+        else:
+            clone._scalar = False
+            clone._query_builder.limit(k.stop - k.start)
+            clone._query_builder.offset(k.start)
+        self._sliced = True
+        return clone

@@ -80,7 +80,7 @@ async def test(
         # .filter(status__code=)
         # .filter(status_id=1)
         # .values_list('id', 'name')
-        # .order_by('id')
+        .order_by('id')
         # .order_by('status__code')
         # .order_by('-subsections__status__code')
         # .outerjoin("subsections__status")
@@ -93,8 +93,8 @@ async def test(
         # .execution_options(populate_existing=True)
     )
 
-    res = await repository.create(name="Section", status_id=1)
-    print(res.id)
+    res = await queryset.first()
+    print(res)
     return res
 
 
