@@ -477,7 +477,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### execution_options()
 
-### execution_options(self, **kw: dict[str, Any])
+#### execution_options(self, **kw: dict[str, Any])
 
 Сохраняет условия выполнения запроса.
 
@@ -489,49 +489,49 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### join()
 
-### join(self, *args: str, isouter: bool)
+#### join(self, *args: str, isouter: bool)
 
 Парсит и валидирует JOIN-ы
 
 ### distinct()
 
-### distinct() -> None
+#### distinct() -> None
 
 Сохраняет указание применить DISTINCT
 
 ### limit()
 
-### limit(self, limit: int | None) -> None
+#### limit(self, limit: int | None) -> None
 
 Сохраняет значение для LIMIT.
 
 ### offset()
 
-### offset(self, offset: int | None) -> None
+#### offset(self, offset: int | None) -> None
 
 Сохраняет значение для OFFSET.
 
 ### build_count_stmt()
 
-### build_count_stmt() -> Select
+#### build_count_stmt() -> Select
 
 Возвращает запрос на подсчет количества.
 
 ### build_delete_stmt()
 
-### build_delete_stmt(self) -> Delete
+#### build_delete_stmt(self) -> Delete
 
 Возвращает запрос на удаление.
 
 ### build_update_stmt()
 
-### build_update_stmt(self, values: dict[str, Any]) -> Update
+#### build_update_stmt(self, values: dict[str, Any]) -> Update
 
 Возвращает запрос на обновление.
 
 ### build_select_stmt()
 
-### build_select_stmt(self) -> Select
+#### build_select_stmt(self) -> Select
 
 Возаращает запрос на выборку данных.
 
