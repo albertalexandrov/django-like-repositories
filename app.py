@@ -71,31 +71,17 @@ async def test(
     session: AsyncSession = Depends(get_session),
     repository: SectionRepository = Depends(),
 ):
-    queryset = (
+    qs = (
         repository
         .objects
-        # .filter(subsections__status__id__in=[1, 2])
-        # .filter(subsections__status__id=2)
-        # .filter(subsections__id=None)
-        # .filter(status__code=)
-        # .filter(status_id=1)
-        # .values_list('id', 'name')
-        .order_by('id')
-        # .order_by('status__code')
-        # .order_by('-subsections__status__code')
-        # .outerjoin("subsections__status")
-        # .outerjoin("subsections")
-        # .limit(2)
-        # .options("subsections")
-        # .options("subsections__status")
-        # .options("subsections__status")
-        # .returning('id', 'name')
-        # .execution_options(populate_existing=True)
+        .filter(name='раздел15')
+        .returning(return_model=True)
     )
-
-    res = await queryset.first()
-    print(res)
-    return res
+    result = await qs.update(status_id=3)
+    print(result.scalars().all())
+    return
+    print(sections)
+    return sections
 
 
 @app.get("/test-on-session")

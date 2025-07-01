@@ -5,10 +5,47 @@
 - [Модели данных](#модели-данных)
 - [Базовый репозиторий](#базовый-репозиторий)
 - [QuerySet](#queryset)
-  - [lookup-ы](#lookup-ы)
-  - [Промежуточные методы](#промежуточные-методы)
-  - [Терминальные методы](#терминальные-методы)
-  - [Финальный сформированный запрос](#финальный-сформированный-запрос)
+  - [Промежуточные и терминальные методы](#промежуточные-и-терминальные-методы)
+  - [Вычисление QuerySet](#вычисление-queryset)
+  - [Срезы](#срезы)
+  - [Управление жизенным циклом SQLAlchemy](#управление-жизенным-циклом-sqlalchemy)
+  - [Кэширование](#кэширование)
+- [QueySet API](#queryset-api)
+  - [filter()](#filter)
+  - [order_by()](#order_by)
+  - [options()](#options)
+  - [innerjoin()](#innerjoin)
+  - [outerjoin()](#outerjoin)
+  - [execution_options()](#execution_options)
+  - [returning()](#returning)
+  - [flush()](#flush)
+  - [commit()](#commit)
+  - [values_list()](#values_list)
+  - [distinct()](#distinct)
+  - [first()](#first)
+  - [count()](#count)
+  - [get_one_or_none()](#get_one_or_none)
+  - [get_or_create()](#get_or_create)
+  - [update_or_create()](#update_or_create)
+  - [in_bulk()](#in_bulk)
+  - [exists()](#exists)
+  - [delete()](#delete)
+- [QueryBuilder](#querybuilder)
+- [API QueryBuilder](#api-querybuilder)
+  - [filter()](#filter-1)
+  - [order_by()](#order_by-1)
+  - [options()](#options-1)
+  - [returning()](#returning-1)
+  - [execution_options()](#execution_options-1)
+  - [values_list()](#values_list-1)
+  - [join()](#join)
+  - [distinct()](#distinct-1)
+  - [limit()](#limit)
+  - [offset()](#offset)
+  - [build_count_stmt()](#build_count_stmt)
+  - [build_delete_stmt()](#build_delete_stmt)
+  - [build_update_stmt()](#build_update_stmt)
+  - [build_select_stmt()](#build_select_stmt)
 - [Примеры](#примеры)
   - [Простая фильтрация](#простая-фильтрация)
   - [Фильтрация по связной модели](#фильтрация-по-связной-модели)
@@ -18,6 +55,9 @@
   - [Получение Section, у которых отсутствуют связные Subsection](#получение-section-у-которых-отсутствуют-связные-subsection)
   - [Получение первой записи](#получение-первой-записи)
   - [Кастомный objects](#кастомный-objects)
+  - [Лимитированные запросы](#лимитированные-запросы)
+  - [Обновление данных](#обновление-данных)
+  - [Удаление данных](#удаление-данных)
 - [Планы](#планы)
 
 ## Дисклеймер
@@ -196,7 +236,7 @@ class BaseRepository(Generic[Model]):
 Поделка на QuerySet Django с некоторыми особенностями SQLAlchemy.
 
 Данный класс принимает параметры запроса при помощи промежуточныех методов и транслирует их в QueryBuilder, 
-а также выполняет запросы в БД
+а также выполняет запросы в БД.
 
 ### Промежуточные и терминальные методы
 
@@ -256,11 +296,11 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 Результат вычисления QuerySet не кэшируется.
 
-## QueySet API
+## QuerySet API
 
 ### filter()
 
-#### filter(self, **kw: dict[str:Any])
+#### filter(**kw: dict[str:Any]) -> Self
 
 Передает параметры фильтрации в QueryBuilder.
 
@@ -270,7 +310,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### order_by()
 
-#### order_by(*args: str)
+#### order_by(*args: str) -> Self
 
 Передает параметры сортировки в QueryBuilder.
 
@@ -280,13 +320,13 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### options
 
-#### options(*args: str)
+#### options(*args: str) -> Self
 
 Передает параметры options в QueryBuilder
 
 ### innerjoin()
 
-#### innerjoin(*args: str)
+#### innerjoin(*args: str) -> Self
 
 Передает параметры внутреннених join-ов в QueryBuilder.
 
@@ -296,7 +336,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### outerjoin()
 
-#### outerjoin(*args: str)
+#### outerjoin(*args: str) -> Self
 
 Передает параметры внешних join-ов в QueryBuilder.
 
@@ -306,7 +346,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### execution_options()
 
-#### execution_options(**kw)
+#### execution_options(**kw: dict[str:Any]) -> Self
 
 Передает параметры выполнения запроса в QueryBuilder.
 
@@ -316,7 +356,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### returning()
 
-#### returning(*args: str, return_model: bool = False)
+#### returning(*args: str, return_model: bool = False) -> Self
 
 Передает параметры возвращаемых значений в QueryBuilder.
 
@@ -326,7 +366,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### flush()
 
-#### flush(flush: bool = True)
+#### flush(flush: bool = True, /) -> Self
 
 Сохраняет указание на выполнение flush после выполнения запроса
 
@@ -336,7 +376,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### commit()
 
-#### commit(commit: bool = True)
+#### commit(commit: bool = True, /) -> Self
 
 Сохраняет указание на выполнение commit после выполнения запроса. 
 
@@ -346,7 +386,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### values_list()
 
-#### values_list(*args: str, flat: bool = False, named: bool = False)
+#### values_list(*args: str, flat: bool = False, named: bool = False) -> Self
 
 Передает названия запрашиваемых столбцов в QueryBuilder
 
@@ -356,7 +396,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### distinct()
 
-#### distinct()
+#### distinct() -> Self
 
 Передает указание применить DISTINCT в QueryBuilder.
 
@@ -366,7 +406,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### first()
 
-#### first()
+#### first() -> Model | None
 
 Возвращает первый элемент QuerySet.
 
@@ -374,7 +414,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### count()
 
-#### count()
+#### count() -> int
 
 Возвращает количество объектов в QuerySet.
 
@@ -382,7 +422,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### get_one_or_none()
 
-#### get_one_or_none()
+#### get_one_or_none() -> Model | None
 
 Возвращает первый объект в QuerySet или None. Если элементов больше одного, то рейзится исключение.
 
@@ -390,7 +430,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### get_or_create()
 
-#### get_or_create(self, defaults: dict = None, **kw)
+#### get_or_create(defaults: dict = None, **kw) -> tuple[Model, bool]
 
 Возвращает объект или создает новый, если объект по условиям не был найден.
 
@@ -398,7 +438,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### update_or_create()
 
-#### update_or_create(self, defaults=None, create_defaults=None, **kw)
+#### update_or_create(defaults=None, create_defaults=None, **kw) -> tuple[Model, bool]
 
 Обновляет сущетсвующий объект или создает новый, если объект по условиям не найден.
 
@@ -406,7 +446,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### in_bulk()
 
-#### in_bulk(self, id_list: list[Any] = None, *, field_name="id")
+#### in_bulk(id_list: list[Any] = None, *, field_name="id") -> dict[Any:Model]
 
 Возвращает словарь, где в качестве ключа выступает значение из field_name, а значением - объект.
 
@@ -414,7 +454,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### exists()
 
-#### exists()
+#### exists() -> bool
 
 Возвращает признак наличия объектов в QuerySet.
 
@@ -422,7 +462,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### delete()
 
-#### delete()
+#### delete() -> Result[Model]
 
 Выполняет удаление объектов, входящих в QuerySet.
 
@@ -430,7 +470,7 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### update()
 
-#### update(values: dict[str:Any])
+#### update(values: dict[str:Any]) -> Result[Model]
 
 Выполняет обновление объектов, входящих в QuerySet.
 
@@ -441,29 +481,29 @@ await some_repository.object.filter(status_code="published").commit().delete()
 Обертка над запросом SQLAlchemy.  Хранит параметры запроса.  Предоставляет методы для создания конечных методов.
 Собирает параметры запроса и в конце генерирует запрос.
 
-ВАЖНО! Все связные модели JOIN-ятся. Такой подход был выбран по нескольким причинам: 
+**ВАЖНО! Все связные модели JOIN-ятся. Такой подход был выбран по нескольким причинам: 
 
 - относительная простота разработки, особенно в контексте работы с обратными связями и кейсов типа "вернуть только
 те разделы, у которых есть подразделы" (или наоборот);
-- относительно проще воспринимать и контролировать построение запроса (ведь запрос в итоге всего один).
+- относительно проще воспринимать и контролировать построение запроса (ведь запрос в итоге всего один).**
 
 ## API QueryBuilder
 
 ### filter()
 
-#### filter(self, **kw: dict[str:Any])
+#### filter(**kw: dict[str:Any]) -> None
 
 Парсит и валидирует условия фильтрации, обрабатывает сопутствующие join-ы.
 
 ### order_by()
 
-#### order_by(self, *args: str)
+#### order_by(*args: str) -> None
 
 Парсит и валидирует условия сортировки, обрабатывает сопутствующие join-ы.
 
 ### options()
 
-#### options(self, *args: str)
+#### options(*args: str) -> None
 
 Парсит и валидирует options, обрабатывает сопутствующие join-ы.
 
@@ -471,25 +511,25 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ### returning()
 
-#### returning(self, *args: str, return_model: bool = False)
+#### returning(*args: str, return_model: bool = False) -> None
 
 Парсит и валидирует возвращаемые значения.
 
 ### execution_options()
 
-#### execution_options(self, **kw: dict[str, Any])
+#### execution_options(**kw: dict[str, Any]) -> None
 
 Сохраняет условия выполнения запроса.
 
 ### values_list()
 
-#### values_list(self, *args: str)
+#### values_list(*args: str) -> None:
 
 Парсит и валидирует наименования возвращаемых столбцов.
 
 ### join()
 
-#### join(self, *args: str, isouter: bool)
+#### join(*args: str, isouter: bool) -> None
 
 Парсит и валидирует JOIN-ы
 
@@ -543,12 +583,12 @@ await some_repository.object.filter(status_code="published").commit().delete()
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .filter(name__icontains='управление')
 )
-await queryset.all()
+res = await qs
 ```
 
 будет сформирован SQL-запрос:
@@ -565,23 +605,28 @@ WHERE sections.name ILIKE '%управление%'
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .filter(status__code='unpublished')
 )
-await queryset.all()
+sections = await qs
 ```
 
 будет сформирован запрос: 
 
 ```sql
 SELECT sections.id, sections.name, sections.status_id 
-FROM sections JOIN publication_statuses ON publication_statuses.id = sections.status_id 
-WHERE publication_statuses.code = 'unpublished'
+FROM sections 
+JOIN publication_statuses AS publication_statuses_1 ON publication_statuses_1.id = sections.status_id 
+WHERE publication_statuses_1.code = 'unpublished'
 ```
 
-Обратите внимание, что автоматически была при-join-ена таблица `publication_statuses`.
+Обратите внимание, что автоматически была при-JOIN-ена таблица `publication_statuses`. JOIN произошел через алиас.
+Также фильтрация производится через алиас.
+
+Таблицы JOIN-ятся через алиасы для того, чтобы иметь возможность JOIN-ить одинаковые таблицы более чем один раз и 
+фильтроваться по ним.
 
 ### Простая сортировка
 
@@ -589,12 +634,12 @@ WHERE publication_statuses.code = 'unpublished'
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .order_by('name', '-status_id')
 )
-await queryset.all()
+sections = await qs
 ```
 
 будет сформирован запрос: 
@@ -613,19 +658,19 @@ ORDER BY sections.name ASC, sections.status_id DESC
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .order_by('status__code')
 )
-await await queryset.all()
+sections = await qs
 ```
 
 ```sql
-SELECT sections.id, sections.name, sections.status_id 
+sections.id, sections.name, sections.status_id 
 FROM sections 
-JOIN publication_statuses ON publication_statuses.id = sections.status_id 
-ORDER BY publication_statuses.code ASC
+JOIN publication_statuses AS publication_statuses_1 ON publication_statuses_1.id = sections.status_id 
+ORDER BY publication_statuses_1.code ASC
 ```
 
 Обратите внимание, что автоматически была при-join-ена таблица `publication_statuses`.
@@ -641,25 +686,24 @@ ORDER BY publication_statuses.code ASC
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .options('subsections')
 )
-await queryset.all()
+sections = await qs
 ```
 
 где `subsections` - обратная связь на модель Subsection, будет сформирован запрос:
 
 ```sql
-SELECT subsections.id, subsections.name, subsections.section_id, subsections.status_id, sections.id AS id_1, sections.name AS name_1, sections.status_id AS status_id_1 
+SELECT subsections_1.id, subsections_1.name, subsections_1.section_id, subsections_1.status_id, sections.id AS id_1, sections.name AS name_1, sections.status_id AS status_id_1 
 FROM sections 
-JOIN subsections ON sections.id = subsections.section_id
+JOIN subsections AS subsections_1 ON sections.id = subsections_1.section_id
 ```
 
-Обратите внимание, чтобы был использован inner join. Соответственно, для примера будут возвращены только те Section, 
-у которых есть связные Subsection (joinedload по умолчанию используется inner join). Данные полученные запросом будут примерно 
-следующими:
+Обратите внимание, чтобы был использован INNER JOIN. Соответственно, для примера будут возвращены только те Section, 
+у которых есть связные Subsection. Данные полученные запросом будут примерно следующими:
 
 ```json
 [
@@ -681,28 +725,28 @@ JOIN subsections ON sections.id = subsections.section_id
 
 Но что делать, если необходимо получить все Section, даже если у них отсутствуют связные Subsection?
 
-Для этого необходимо вручную задать тип join-а, чтобы QuerySet подтянул связные записи при помощи contains_eager:
+Для этого необходимо вручную задать тип JOIN-а, чтобы QuerySet подтянул связные записи при помощи contains_eager:
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .outerjoin('subsections')
     .options('subsections')
 )
-await queryset.all()
+sections = await qs
 ```
 
-Тогда будет использован outer join:
+Тогда будет использован LEFT JOIN:
 
 ```sql
-SELECT subsections.id, subsections.name, subsections.section_id, subsections.status_id, sections.id AS id_1, sections.name AS name_1, sections.status_id AS status_id_1 
+SELECT subsections_1.id, subsections_1.name, subsections_1.section_id, subsections_1.status_id, sections.id AS id_1, sections.name AS name_1, sections.status_id AS status_id_1 
 FROM sections 
-LEFT OUTER JOIN subsections ON sections.id = subsections.section_id
+LEFT OUTER JOIN subsections AS subsections_1 ON sections.id = subsections_1.section_id
 ```
 
-А в результате будут все Section:
+А в результате будут все Section в том числе те, у которых нет Subsection:
 
 ```json
 [
@@ -760,30 +804,30 @@ LEFT OUTER JOIN subsections ON sections.id = subsections.section_id
 
 ### Получение Section, у которых отсутствуют связные Subsection
 
-Выше был приведен один кейс использования метода `QuerySet.outerjoin`.
+Выше был приведен один кейс использования метода `QuerySet.outerjoin()`.
 
 Еще одним примером может быть кейс, когда необходимо получить только те Section, у которых отсутствуют Subsection. 
 Для этого также определяем `outerjoin` и фильтруем по условию `Subsection.id = null`:
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .outerjoin('subsections')
     .filter(subsections__section_id=None)
     .options('subsections')
 )
-await queryset.all()
+sections = await qs
 ```
 
 Код сгенерирует запрос:
 
 ```sql
-SELECT subsections.id, subsections.name, subsections.section_id, subsections.status_id, sections.id AS id_1, sections.name AS name_1, sections.status_id AS status_id_1 
+SELECT subsections_1.id, subsections_1.name, subsections_1.section_id, subsections_1.status_id, sections.id AS id_1, sections.name AS name_1, sections.status_id AS status_id_1 
 FROM sections 
-LEFT OUTER JOIN subsections ON sections.id = subsections.section_id 
-WHERE subsections.section_id IS NULL
+LEFT OUTER JOIN subsections AS subsections_1 ON sections.id = subsections_1.section_id 
+WHERE subsections_1.section_id IS NULL
 ```
 
 Результат:
@@ -840,31 +884,25 @@ WHERE subsections.section_id IS NULL
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .objects
     .options('subsections')
 )
-await queryset.first()
+section = await qs.first()
 ```
 
 сгенерирует запрос:
 
 ```sql
-SELECT subsections.id,
-       subsections.name,
-       subsections.section_id,
-       subsections.status_id,
-       sections.id AS id_1,
-       sections.name AS name_1,
-       sections.status_id AS status_id_1
-FROM sections
-JOIN subsections ON sections.id = subsections.section_id
-WHERE sections.id IN
-    (SELECT sections.id
-     FROM sections
-     JOIN subsections ON sections.id = subsections.section_id
-     LIMIT $1::INTEGER)
+SELECT subsections_1.id, subsections_1.name, subsections_1.section_id, subsections_1.status_id, anon_1.id AS id_1, anon_1.name AS name_1, anon_1.status_id AS status_id_1 
+FROM (
+    SELECT DISTINCT sections.id AS id, sections.name AS name, sections.status_id AS status_id 
+    FROM sections 
+    JOIN subsections AS subsections_2 ON sections.id = subsections_2.section_id 
+    LIMIT 1 OFFSET 0
+) AS anon_1 
+JOIN subsections AS subsections_1 ON anon_1.id = subsections_1.section_id
 ```
 
 При множественных запрашиваемых связях, возможно, будет проседать прозводительность запросов.
@@ -889,11 +927,11 @@ class SectionRepository(BaseRepository):
 
 ```python
 repository = SectionRepository(session)
-queryset = (
+qs = (
     repository
     .published
 )
-await queryset.all()
+sections = await qs
 ```
 
 сгенерирует SQL-запрос:
@@ -901,9 +939,108 @@ await queryset.all()
 ```sql
 SELECT sections.id, sections.name, sections.status_id 
 FROM sections 
-JOIN publication_statuses ON publication_statuses.id = sections.status_id 
-WHERE publication_statuses.code = 'published'
+JOIN publication_statuses AS publication_statuses_1 ON publication_statuses_1.id = sections.status_id 
+WHERE publication_statuses_1.code = 'published'
 ```
+
+### Лимитированные запросы
+
+Лимитированные запросы выполняются при помощи срезов:
+
+```python
+repository = SectionRepository(session)
+qs = (
+    repository
+    .objects
+    .options('subsections')
+)
+sections = await qs[:1]
+```
+
+сгенерирует SQL-запрос:
+
+```sql
+SELECT subsections_1.id, subsections_1.name, subsections_1.section_id, subsections_1.status_id, anon_1.id AS id_1, anon_1.name AS name_1, anon_1.status_id AS status_id_1 
+FROM (
+    SELECT DISTINCT sections.id AS id, sections.name AS name, sections.status_id AS status_id 
+    FROM sections JOIN subsections AS subsections_2 ON sections.id = subsections_2.section_id 
+    LIMIT 1 
+    OFFSET 0
+) AS anon_1 
+JOIN subsections AS subsections_1 ON anon_1.id = subsections_1.section_id
+```
+
+Обратите внимание, что лимитирован подзапрос и в конечном результате все обратные связи войдут в выборку без потерь.
+
+### Обновление данных
+
+Для обновления данных необходимо использовать метод `update()`:
+
+```python
+repository = SectionRepository(session)
+qs = (
+    repository
+    .objects
+    .filter(status_id=3)
+)
+await qs.update(status_id=1)
+```
+
+Будет сгенерирован SQL-запрос:
+
+```sql
+UPDATE sections 
+SET status_id=1 
+WHERE sections.id IN (
+    SELECT distinct(sections.id) AS distinct_1 
+    FROM sections 
+    WHERE sections.status_id = 3
+)
+RETURNING sections.id
+```
+
+RETURNING можно переопределить методом `returning()`:
+
+```python
+qs = (
+    repository
+    .objects
+    .filter(name='раздел15')
+    .returning(return_model=True)
+)
+result = await qs.update(status_id=3)
+print(result.scalars().all())
+```
+
+где result - это объект Result SQLAlchemy со всеми вытекающими возможностями манипулирования этим объектом.
+
+### Удаление данных
+
+Для удаления данных необходимо использовать метод `delete()`:
+
+```python
+repository = SectionRepository(session)
+qs = (
+    repository
+    .objects
+    .filter(name='раздел16')
+)
+await qs.delete()
+```
+
+Будет сгенерирован SQL-запрос:
+
+```sql
+DELETE FROM sections 
+WHERE sections.id IN (
+    SELECT distinct(sections.id) AS distinct_1 
+    FROM sections 
+    WHERE sections.name = 'раздел16'
+) 
+RETURNING sections.id
+```
+
+RETURNING переопределяется также как и в случае с методом `update()`.
 
 ## Планы
 

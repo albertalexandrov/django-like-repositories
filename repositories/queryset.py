@@ -245,7 +245,9 @@ class QuerySet:
         await self._flush_commit_reset()
         return result
 
-    async def update(self, values: dict[str:Any]) -> Result[Model]:
+    async def update(self, **values: dict[str:Any]) -> Result[Model]:
+        if not values:
+            raise ValueError("В метод 'update()' не были переданы значения")
         self._validate_sliced()
         stmt = self._query_builder.build_update_stmt(values)
         result = await self._session.execute(stmt)
@@ -282,7 +284,7 @@ class QuerySet:
         if isinstance(k, slice):
             if k.step is not None:
                 raise ValueError("Использование шага среза не предусмотрена")
-            elif k.start >= k.stop:
+            elif k.start is not None and k.stop is not None and k.start >= k.stop:
                 raise ValueError("Начало срез должно быть меньше конца")
         clone = self._clone()
         if isinstance(k, int):
@@ -291,8 +293,16 @@ class QuerySet:
             clone._query_builder.offset(k)
         else:
             clone._scalar = False
-            clone._query_builder.limit(k.stop - k.start)
-            clone._query_builder.offset(k.start)
+            if k.start is None and k.stop is None:
+                limit = offset = None
+            elif k.start is None and k.stop is not None:
+                limit, offset = k.stop, 0
+            elif k.start is not None and k.stop is None:
+                limit, offset = None, k.start
+            else:
+                limit, offset =  k.stop - k.start, k.start
+            clone._query_builder.limit(limit)
+            clone._query_builder.offset(offset)
         self._sliced = True
         return clone
 
